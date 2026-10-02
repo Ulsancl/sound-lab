@@ -20,12 +20,21 @@ export class WaveChart {
         add('line', { x1: x(snapshot.probeRatio), y1: center - scale - 3, x2: x(snapshot.probeRatio), y2: center + scale + 3, stroke: '#b3d1d9', 'stroke-dasharray': '3 4', opacity: .6 });
         add('circle', { cx: x(snapshot.probeRatio), cy: center - scale * snapshot.probe[quantity + 'Relative'], r: 4, fill: color });
       }
-      if (savedVisible) { const d = path(saved, quantity + 'Relative'); add('path', { d, fill: 'none', stroke: '#10212a', 'stroke-width': 5, 'stroke-dasharray': '7 5' }); add('path', { d, fill: 'none', stroke: '#e49ccd', 'stroke-width': 2, 'stroke-dasharray': '7 5' }); const px = x(saved.probeRatio), py = center - scale * saved.probe[quantity + 'Relative']; add('path', { d: `M${px},${py-5}L${px+5},${py}L${px},${py+5}L${px-5},${py}Z`, fill: '#182930', stroke: '#e49ccd', 'stroke-width': 1.6 }); }
+      if (savedVisible) {
+        for (const sign of [1, -1]) {
+          const d = saved.samples.map((sample, i) => `${i ? 'L' : 'M'}${x(sample.positionRatio).toFixed(2)},${(center - scale * sign * sample[quantity + 'Envelope']).toFixed(2)}`).join(' ');
+          add('path', { d, fill: 'none', stroke: '#e49ccd', 'stroke-width': 1.15, 'stroke-dasharray': '5 3 1 3', opacity: .65, 'data-saved-envelope': quantity });
+        }
+        const d = path(saved, quantity + 'Relative'); add('path', { d, fill: 'none', stroke: '#10212a', 'stroke-width': 5, 'stroke-dasharray': '7 5' }); add('path', { d, fill: 'none', stroke: '#e49ccd', 'stroke-width': 2, 'stroke-dasharray': '7 5', 'data-saved-wave': quantity });
+        for (const ratio of saved.nodes[quantity + 'Ratios']) add('rect', { x: x(ratio) - 3.5, y: center - 3.5, width: 7, height: 7, stroke: '#e49ccd', fill: '#182930', 'stroke-width': 1.5, 'data-saved-node': quantity, 'data-ratio': ratio });
+        const px = x(saved.probeRatio), py = center - scale * saved.probe[quantity + 'Relative']; add('path', { d: `M${px},${py-5}L${px+5},${py}L${px},${py+5}L${px-5},${py}Z`, fill: '#182930', stroke: '#e49ccd', 'stroke-width': 1.6 });
+      }
       for (const ratio of [0,.25,.5,.75,1]) add('text', { x: x(ratio), y: center + 55, fill: '#9cb1bb', 'font-size': 10, 'text-anchor': 'middle' }, `${ratio}`);
     }
     add('text', { x: (left + right) / 2, y: 278, fill: '#aac4cf', 'font-size': 10, 'text-anchor': 'middle' }, '관 안의 상대 위치 x/L');
     this.container.replaceChildren(svg);
-    this.debug = { display, xDomain: [0,1], yDomains: [[-1,1],[-1,1]], currentVisible, savedVisible: Boolean(savedVisible), current: { frequencyHz: snapshot.frequencyHz, lengthM: snapshot.config.lengthM, phaseRad: snapshot.phaseRad, probeRatio: snapshot.probeRatio, probePressure: number(snapshot.probe.pressureRelative) }, saved: saved ? { frequencyHz: saved.frequencyHz, lengthM: saved.config.lengthM, phaseRad: saved.phaseRad, probeRatio: saved.probeRatio } : null };
+    this.debug = { display, xDomain: [0,1], yDomains: [[-1,1],[-1,1]], currentVisible, savedVisible: Boolean(savedVisible), current: { frequencyHz: snapshot.frequencyHz, lengthM: snapshot.config.lengthM, phaseRad: snapshot.phaseRad, probeRatio: snapshot.probeRatio, probePressure: number(snapshot.probe.pressureRelative) }, saved: saved ? { frequencyHz: saved.frequencyHz, lengthM: saved.config.lengthM, phaseRad: saved.phaseRad, probeRatio: saved.probeRatio } : null,
+      envelopes: { current: currentVisible, saved: Boolean(savedVisible) }, nodes: { current: currentVisible ? snapshot.nodes : null, saved: savedVisible ? saved.nodes : null } };
     if (saved) this.drawFrequencies(snapshot, saved); else this.frequencyContainer.replaceChildren();
   }
   drawFrequencies(current, saved) {

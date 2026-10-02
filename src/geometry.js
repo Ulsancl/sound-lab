@@ -6,7 +6,7 @@ const explodedValue = value => { if (typeof value !== 'boolean') throw new TypeE
 
 export const COMPONENTS = freeze([
   { id: 'bench-base', name: '금속 실험대', description: '관과 레일을 지지하는 원본 구조의 실험대입니다. 진동하는 실험대 자체의 음향은 계산하지 않습니다.', material: '도장 금속 · 고무 받침' },
-  { id: 'rail', name: '이동 레일', description: '두 관 지지대와 가상 탐침 캐리지를 안내하는 금속 레일입니다.', material: '스테인리스 레일' },
+  { id: 'rail', name: '이동 레일', description: '관 지지용 두 레일과 뒤쪽의 독립 탐침 가이드입니다. 탐침은 고정 지지대를 지나도 서로 부딪히지 않습니다.', material: '스테인리스 레일 · 관통 보어 받침' },
   { id: 'scale', name: '길이 눈금', description: '관의 왼쪽 끝을 0, 오른쪽 끝을 L로 표시합니다. 길이 변경은 내경이 일정한 다른 관으로 교체하는 가상 실험입니다.', material: '금속 눈금판' },
   { id: 'tube-wall', name: '원통 관', description: '내경 40 mm, 외경 46 mm의 균일 관입니다. 절개는 안을 보기 위한 표시이며 관 옆을 실제로 여는 경계조건 변화가 아닙니다.', material: '절개 알루미늄 관' },
   { id: 'tube-collars', name: '관 고정 링', description: '관의 양끝 부근을 지지대에 고정하는 링입니다. 분해 보기에서는 링을 들어 올려 관과 지지대를 구분합니다.', material: '강철 링 · 고정 볼트' },
@@ -25,9 +25,11 @@ export const GEOMETRY = freeze({
   tube: { centerY: .15, centerZ: 0, innerRadiusM: .020, outerRadiusM: .023, cutawayStartRad: Math.PI / 3, cutawaySweepRad: Math.PI * 4 / 3 },
   bench: { center: [0, .021, .025], lengthMarginM: .26, size: [1.46, .025, .40], topY: .0335 },
   rails: { lengthM: 1.32, lengthMarginM: .12, centerY: .052, z: [-.075, .075], radiusM: .008 },
+  guide: { centerY: .052, centerZ: -.135, radiusM: .006, bushInnerRadiusM: .0062, bushOuterRadiusM: .010, bushLengthM: .038, bodyLengthM: .034, bodyHalfWidthM: .016, bodyBottomY: .038, bodyTopY: .077, bracketWidthM: .020 },
+  support: { lengthM: .066, halfWidthM: .096, bottomY: .0355, topY: .0805, bushInnerRadiusM: .0082, bushOuterRadiusM: .012, bushLengthM: .070, saddleHalfWidthM: .021, saddleBottomY: .1125, saddleLengthM: .043 },
   supportInsetM: .055,
   collar: { innerRadiusM: .023, outerRadiusM: .030, widthM: .018 },
-  cap: { thicknessM: .010, radiusM: .031, storedCenter: [-.625, .076, .155] },
+  cap: { thicknessM: .010, radiusM: .031, storedCenter: [-.625, .076, .155], grooveInnerRadiusM: .0201, grooveOuterRadiusM: .0229, grooveDepthM: .0013, sealInnerRadiusM: .0202, sealOuterRadiusM: .0228, sealDepthM: .0012 },
   capStand: { center: [-.625, .03925, .155], size: [.092, .0115, .065] },
   readout: { center: [.47, .072, .150], size: [.188, .076, .108] },
   displayAmplitudeRatio: .01,

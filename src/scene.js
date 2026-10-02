@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { COMPONENTS, DEFAULT_VIEW, GEOMETRY as G, tubeLayout, particlePosition, probePosition, pressureColor, hollowTubeMesh } from './geometry.js';
+import { sleeveGeometry, boredBlockGeometry, supportBodyGeometry, probeBodyGeometry, collarSaddleGeometry, capGeometry, capSealGeometry } from './geometry-meshes.js';
 import './scene.css';
 
 const V = value => new THREE.Vector3(...value);
@@ -14,7 +15,7 @@ export class SoundScene {
   constructor(container, { onSelect = () => {}, onCameraChange = () => {} } = {}) {
     this.container = container; this.onSelect = onSelect; this.onCameraChange = onCameraChange;
     this.components = new Map(); this.geometries = new Set(); this.materials = new Set(); this.textures = new Set();
-    this.view = structuredClone(DEFAULT_VIEW); this.updating = true; this.layout = tubeLayout(.6, 'open-open');
+    this.view = structuredClone(DEFAULT_VIEW); this.updating = true; this.layout = tubeLayout(.6, 'open-open'); this.inspection = null;
     container.classList.add('sound-scene');
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.7)); this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -27,7 +28,7 @@ export class SoundScene {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement); this.controls.enableDamping = false;
     this.controls.minDistance = .05; this.controls.maxDistance = 10; this.controls.maxPolarAngle = Math.PI;
     this.controls.zoomSpeed = .7; this.controls.panSpeed = .6;
-    this.controlsChanged = () => { if (!this.updating && !this.disposed) { this.render(); this.onCameraChange(this.getCameraState()); } };
+    this.controlsChanged = () => { if (!this.updating && !this.disposed) { this.render(); this.onCameraChange(this.getProjectCameraState()); } };
     this.controls.addEventListener('change', this.controlsChanged);
     const room = new RoomEnvironment(), pmrem = new THREE.PMREMGenerator(this.renderer);
     this.environment = pmrem.fromScene(room, .04); room.dispose(); pmrem.dispose();
@@ -91,14 +92,24 @@ export class SoundScene {
     this.feet = []; for (const side of [-1, 1]) for (const z of [-.13, .18]) { const group = new THREE.Group(); group.userData.side = side; bench.add(group); this.cylinder(.023, .008, this.mat.rubber, group, [0, .0045, z]); this.bolt(group, [0, .035, z]); this.feet.push(group); }
     this.anchor('bench-base', [0, .035, .208]);
     this.rails = []; const rail = this.node('rail');
-    for (const z of G.rails.z) { const mesh = this.cylinder(G.rails.radiusM, 1, this.mat.steel, rail, [0, G.rails.centerY, z], 'x'); this.rails.push(mesh); }
-    this.railBrackets = []; for (const side of [-1, 1]) { const group = new THREE.Group(); group.userData.side = side; rail.add(group); this.box([.026, .031, .188], this.mat.dark, group, [0, .0465, 0]); for (const z of [-.083, .083]) this.bolt(group, [0, .063, z]); this.railBrackets.push(group); }
+    for (const z of G.rails.z) { const mesh = this.cylinder(G.rails.radiusM, 1, this.mat.steel, rail, [0, G.rails.centerY, z], 'x', 64); this.rails.push(mesh); }
+    this.guideRail = this.cylinder(G.guide.radiusM, 1, this.mat.steel, rail, [0, G.guide.centerY, G.guide.centerZ], 'x', 64);
+    this.railBrackets = []; this.railBores = [];
+    for (const side of [-1, 1]) {
+      const group = new THREE.Group(); group.userData.side = side; rail.add(group);
+      for (const spec of [...G.rails.z.map(z => ({ z, y: G.rails.centerY, radius: G.rails.radiusM })), { z: G.guide.centerZ, y: G.guide.centerY, radius: G.guide.radiusM }]) {
+        const housing = this.mesh(boredBlockGeometry({ length: G.guide.bracketWidthM, bottom: G.bench.topY, top: spec.y + spec.radius + .006, halfWidth: spec.radius + .007, bores: [{ y: spec.y, radius: spec.radius }] }), this.mat.dark, group, [0, 0, spec.z]);
+        this.railBores.push({ mesh: housing, radius: spec.radius, y: spec.y, z: spec.z });
+        for (const x of [-.0105, .0105]) this.mesh(sleeveGeometry(spec.radius, spec.radius + .003, .001, .00015), this.mat.steel, group, [x, spec.y, spec.z]);
+      }
+      this.railBrackets.push(group);
+    }
     this.anchor('rail', [0, G.rails.centerY, .075]);
     const scale = this.node('scale'); this.scaleBacking = this.box([1, .025, .003], this.mat.dark, scale, [0, .086, .098], .0005);
     const image = this.canvasTexture(1536, 96); Object.assign(this, { scaleContext: image.context, scaleTexture: image.texture });
     this.scaleFace = this.mesh(new THREE.PlaneGeometry(1, .025), this.material({ map: image.texture, metalness: .35, roughness: .64 }), scale, [0, .086, .100]);
     this.anchor('scale', [0, .086, .10]);
-    const ground = this.mesh(new THREE.PlaneGeometry(40, 30), this.material({ color: '#34515b', roughness: .91, metalness: .05 }), this.scene, [0, -.001, 0]); ground.rotation.x = -Math.PI / 2; ground.castShadow = false;
+    const ground = this.mesh(new THREE.PlaneGeometry(40, 30), this.material({ color: '#34515b', roughness: .91, metalness: .05 }), this.scene, [0, -.001, 0]); ground.rotation.x = -Math.PI / 2; ground.castShadow = false; this.ground = ground;
   }
   buildTube() {
     const node = this.node('tube-wall'); this.tubeFull = this.mesh(this.surface(hollowTubeMesh(1, false)), this.mat.aluminum, node);
@@ -112,18 +123,20 @@ export class SoundScene {
     }
   }
   buildSupports() {
+    this.supportDetails = [];
     for (const id of ['left-support', 'right-support']) {
-      const node = this.node(id); this.box([.066, .022, .182], this.mat.dark, node, [0, .066, 0], .004);
-      for (const z of G.rails.z) this.cylinder(.014, .066, this.mat.steel, node, [0, G.rails.centerY, z], 'x');
-      this.box([.037, .045, .037], this.mat.dark, node, [0, .0965, 0], .003);
-      this.box([.043, .010, .055], this.mat.black, node, [0, .12, 0], .002);
-      for (const z of [-.064, .064]) this.bolt(node, [0, .0785, z]);
+      const node = this.node(id), body = this.mesh(supportBodyGeometry(), this.mat.dark, node), bushes = [];
+      for (const z of G.rails.z) bushes.push(this.mesh(sleeveGeometry(G.support.bushInnerRadiusM, G.support.bushOuterRadiusM, G.support.bushLengthM), this.mat.brass, node, [0, G.rails.centerY, z]));
+      this.box([.037, G.support.saddleBottomY - G.support.topY, .037], this.mat.dark, node, [0, (G.support.saddleBottomY + G.support.topY) / 2, 0], .0015);
+      const saddle = this.mesh(collarSaddleGeometry(), this.mat.black, node);
+      for (const z of [-.064, .064]) this.bolt(node, [0, G.support.topY + .0015, z]);
+      this.supportDetails.push({ id, body, bushes, saddle });
       this.anchor(id, [0, .100, .021]);
     }
   }
   buildCap() {
-    const cap = this.node('end-cap'); this.capDisk = this.cylinder(G.cap.radiusM, G.cap.thicknessM, this.mat.steel, cap, [0, 0, 0], 'x', 80);
-    this.ring(.0215, .0013, this.mat.rubber, cap, [G.cap.thicknessM / 2, 0, 0]);
+    const cap = this.node('end-cap'); this.capDisk = this.mesh(capGeometry(), this.mat.steel, cap);
+    this.capSeal = this.mesh(capSealGeometry(), this.mat.rubber, cap);
     this.cylinder(.008, .015, this.mat.dark, cap, [-.0125, 0, 0], 'x'); this.cylinder(.015, .010, this.mat.black, cap, [-.0245, 0, 0], 'x');
     this.anchor('end-cap', [-.030, .004, .009]);
     const stand = this.node('cap-stand'); this.box(G.capStand.size, this.mat.dark, stand, [0, G.capStand.center[1], G.capStand.center[2]], .002);
@@ -132,12 +145,12 @@ export class SoundScene {
   }
   buildProbe() {
     const carriage = this.node('probe-carriage');
-    this.box([.034, .021, .037], this.mat.brass, carriage, [0, .065, -.075], .003);
-    this.cylinder(.013, .034, this.mat.black, carriage, [0, G.rails.centerY, -.075], 'x');
-    this.probePost = this.cylinder(.0037, 1, this.mat.steel, carriage, [0, .129, -.075]);
-    this.probeBoom = this.box([.010, .007, .086], this.mat.dark, carriage, [0, .191, -.035], .001);
-    this.probeKnob = this.cylinder(.009, .011, this.mat.brass, carriage, [0, .080, -.091], 'z');
-    this.anchor('probe-carriage', [0, .071, -.092]);
+    this.probeBody = this.mesh(probeBodyGeometry(), this.mat.brass, carriage, [0, 0, G.guide.centerZ]);
+    this.probeBush = this.mesh(sleeveGeometry(G.guide.bushInnerRadiusM, G.guide.bushOuterRadiusM, G.guide.bushLengthM), this.mat.steel, carriage, [0, G.guide.centerY, G.guide.centerZ]);
+    this.probePost = this.cylinder(.0037, 1, this.mat.steel, carriage, [0, .129, G.guide.centerZ]);
+    this.probeBoom = this.box([.010, .007, -G.guide.centerZ + .010], this.mat.dark, carriage, [0, .191, G.guide.centerZ / 2], .001);
+    this.probeKnob = this.cylinder(.009, .011, this.mat.brass, carriage, [0, .076, G.guide.centerZ - .020], 'z');
+    this.anchor('probe-carriage', [0, .062, G.guide.centerZ - .017]);
     const tip = this.node('probe-tip'); this.probeMarker = this.mesh(new THREE.IcosahedronGeometry(.004, 1), this.material({ color: '#f8dba6', emissive: '#7a5015', emissiveIntensity: .22, metalness: .3, wireframe: true }), tip);
     this.probeCircle = this.ring(.009, .0007, this.mat.brass, tip, [0, 0, 0]); this.probeCircle.userData.nonPickable = true;
     this.probeLeader = this.mesh(new THREE.CylinderGeometry(.00065, .00065, .043, 8), this.mat.brass, tip, [0, .0215, 0]); this.probeLeader.userData.nonPickable = true;
@@ -169,8 +182,8 @@ export class SoundScene {
   applyLayout(layout) {
     this.layout = layout; this.bench.scale.x = layout.benchLengthM;
     for (const foot of this.feet) foot.position.x = foot.userData.side * (layout.benchLengthM / 2 - .038);
-    for (const rail of this.rails) rail.scale.y = layout.railLengthM;
-    for (const bracket of this.railBrackets) bracket.position.x = bracket.userData.side * (layout.railLengthM / 2 - .006);
+    for (const rail of [...this.rails, this.guideRail]) rail.scale.y = layout.railLengthM;
+    for (const bracket of this.railBrackets) bracket.position.x = bracket.userData.side * (layout.railLengthM / 2 - .012);
     this.node('tube-wall').position.set(...layout.center); this.tubeFull.scale.x = this.tubeCut.scale.x = layout.lengthM;
     this.node('left-support').position.x = layout.supportXs[0]; this.node('right-support').position.x = layout.supportXs[1];
     for (const [i, collar] of this.collars.entries()) collar.group.position.set(layout.supportXs[i], layout.collarY, 0);
@@ -185,11 +198,11 @@ export class SoundScene {
   updateProbe(snapshot) {
     const [x, y, z] = probePosition(snapshot.config.lengthM, snapshot.probeRatio, this.view.exploded);
     this.node('probe-carriage').position.x = x; this.node('probe-tip').position.set(x, y, z);
-    const top = y + .042, bottom = .075; this.probePost.position.y = (top + bottom) / 2; this.probePost.scale.y = top - bottom; this.probeBoom.position.y = top;
+    const top = y + .042, bottom = G.guide.bodyTopY; this.probePost.position.y = (top + bottom) / 2; this.probePost.scale.y = top - bottom; this.probeBoom.position.y = top;
     const key = `${x}|${this.layout.readoutCenter[0]}`;
     if (key !== this.wireKey) {
       if (this.probeWire) { this.probeWire.geometry.dispose(); this.geometries.delete(this.probeWire.geometry); this.probeWire.material.dispose(); this.materials.delete(this.probeWire.material); this.probeWire.removeFromParent(); }
-      const end = this.layout.readoutCenter, points = [[x, .066, -.094], [x, .041, -.145], [x * .6 + end[0] * .4, .037, -.15], [end[0] - .10, .036, -.115], [end[0] - .107, .039, .035], [end[0] - .078, end[1] + .002, end[2] - .058]];
+      const end = this.layout.readoutCenter, points = [[x, .063, G.guide.centerZ - .016], [x, .041, -.166], [x * .6 + end[0] * .4, .037, -.167], [end[0] - .10, .036, -.115], [end[0] - .107, .039, .035], [end[0] - .078, end[1] + .002, end[2] - .058]];
       this.probeWire = this.wire(points, .0014, this.mat.black, this.node('probe-cable')); this.probeWire.userData.partId = 'probe-cable'; this.anchor('probe-cable', points[2]); this.wireKey = key;
     }
   }
@@ -231,13 +244,60 @@ export class SoundScene {
     if (this.disposed) return; this.updating = true; this.snapshot = snapshot; this.view = { ...DEFAULT_VIEW, ...view };
     const layoutKey = `${snapshot.config.lengthM}|${snapshot.config.boundary}|${this.view.exploded}`;
     if (layoutKey !== this.layoutKey) { this.applyLayout(tubeLayout(snapshot.config.lengthM, snapshot.config.boundary, this.view.exploded)); this.layoutKey = layoutKey; }
-    this.tubeCut.visible = this.view.cutaway; this.tubeFull.visible = !this.view.cutaway;
-    for (const collar of this.collars) { collar.cut.visible = this.view.cutaway; collar.full.visible = !this.view.cutaway; }
     this.updateProbe(snapshot); this.updateField(snapshot); this.drawDisplay(snapshot); this.highlight();
+    this.applyInspectionVisibility(); this.trackInspection();
     this.note.textContent = this.view.exploded ? '분해 간격은 관찰용 · 계산은 조립된 이상관' : this.view.cutaway ? '관찰용 절개 · 축 방향 공기 운동을 확대 표시' : '조립 모습 · 절개하면 내부 표식을 볼 수 있습니다';
     this.readout.textContent = `가상 탐침 ${(snapshot.probeRatio * 100).toFixed(1)}% · 상대 압력 ${snapshot.probe.pressureRelative >= 0 ? '+' : ''}${snapshot.probe.pressureRelative.toFixed(2)}`;
     this.updating = false; this.render();
   }
+  inspectionDefinition(id) {
+    const definitions = {
+      rail: { kind: 'rail', parts: ['rail'], direction: [.9, .5, 1], note: '두 하중 레일과 뒤쪽 독립 탐침 가이드 · 받침은 관통 보어로 축을 감쌉니다.' },
+      'tube-wall': { kind: 'tube', parts: ['tube-wall'], direction: [.25, .3, 1], note: '관 벽 두께 3 mm · 앞쪽 120° 절개는 관찰용이며 음향 경계조건을 바꾸지 않습니다.' },
+      'tube-collars': { kind: 'collar', parts: ['tube-collars', 'left-support'], direction: [.85, .5, 1], note: '왼쪽 고정 링과 오목 안장의 맞닿음 · 링 절개와 분해 간격은 구조 관찰용입니다.' },
+      'left-support': { kind: 'support', parts: ['left-support'], direction: [1, .5, .85], note: '관통 보어와 중공 슬리브 · 레일과 슬리브의 대표 반지름 여유 0.2 mm, 실제 공차 해석은 아닙니다.' },
+      'right-support': { kind: 'support', parts: ['right-support'], direction: [1, .5, .85], note: '관통 보어와 중공 슬리브 · 레일과 슬리브의 대표 반지름 여유 0.2 mm, 실제 공차 해석은 아닙니다.' },
+      'end-cap': { kind: 'cap', parts: ['end-cap'], direction: [.55, .30, 1], note: '씰 홈 관찰을 위해 밀봉 링만 축 방향 3 mm 인출 · 조립 시 링은 닫힘 평면과 같은 면에 놓입니다.' },
+      'probe-carriage': { kind: 'probe', parts: ['probe-carriage'], direction: [1, .35, .8], note: '뒤쪽 독립 가이드용 중공 슬리브 · 가상 탐침 X는 그대로이며 마이크 부하를 계산하지 않습니다.' },
+    };
+    return definitions[id] ?? null;
+  }
+  applyInspectionVisibility() {
+    const definition = this.inspection && this.inspectionDefinition(this.inspection.id), allowed = definition && new Set(definition.parts);
+    for (const [id, part] of this.components) part.node.visible = !allowed || allowed.has(id);
+    this.ground.visible = !this.inspection;
+    const cut = this.view.cutaway || definition?.kind === 'tube' || definition?.kind === 'collar'; this.tubeCut.visible = cut; this.tubeFull.visible = !cut;
+    for (const [i, collar] of this.collars.entries()) { collar.group.visible = definition?.kind !== 'collar' || i === 0; collar.cut.visible = cut; collar.full.visible = !cut; }
+    this.capSeal.position.x = definition?.kind === 'cap' ? .003 : 0;
+    this.note.hidden = Boolean(this.inspection); this.readout.hidden = Boolean(this.inspection);
+  }
+  currentInspectionCenter() {
+    if (!this.inspection) return null;
+    const id = this.inspection.id;
+    if (id === 'rail') return V([0, G.rails.centerY, G.guide.centerZ / 3]);
+    if (id === 'tube-collars') return V([this.layout.supportXs[0], this.layout.collarY, 0]);
+    if (id === 'probe-carriage') return V([this.node(id).position.x, (G.guide.bodyTopY + this.probeBoom.position.y) / 2, G.guide.centerZ / 2]);
+    return this.node(id).position.clone();
+  }
+  trackInspection() {
+    if (!this.inspection) return;
+    const center = this.currentInspectionCenter();
+    if (this.inspection.center) { const delta = center.clone().sub(this.inspection.center); this.camera.position.add(delta); this.controls.target.add(delta); this.camera.lookAt(this.controls.target); }
+    this.inspection.center = center;
+  }
+  beginInspection(id) {
+    const definition = this.inspectionDefinition(id); if (!definition || this.disposed) return false;
+    const original = this.inspection?.original ?? { camera: this.getCameraState(), focusContext: this.focusContext ? [...this.focusContext] : null };
+    this.inspection = { id, original, center: null }; this.focusContext = [id]; this.applyInspectionVisibility();
+    this.fit(definition.parts, definition.direction, .78); this.inspection.center = this.currentInspectionCenter(); this.render(); return true;
+  }
+  endInspection() {
+    if (!this.inspection) return false;
+    const original = this.inspection.original; this.inspection = null; this.applyInspectionVisibility();
+    this.setCameraState(original.camera); this.focusContext = original.focusContext; this.render(); return true;
+  }
+  getInspection() { if (!this.inspection) return null; const { kind, note } = this.inspectionDefinition(this.inspection.id); return { id: this.inspection.id, kind, note }; }
+  getProjectCameraState() { return this.inspection ? structuredClone(this.inspection.original.camera) : this.getCameraState(); }
   identifyMeshes() { this.root.traverse(object => { let ancestor = object; while (ancestor && !ancestor.userData.partId) ancestor = ancestor.parent; if (ancestor) object.userData.partId = ancestor.userData.partId; }); }
   highlight() { this.root.traverse(object => { if (object.isMesh && !object.isInstancedMesh && object.material?.emissive) { const selected = object.userData.partId === this.view.selectedPart; object.material.emissive.set(selected ? '#304e5a' : '#000000'); object.material.emissiveIntensity = selected ? .19 : 0; } }); }
   select(id) { if (!this.components.has(id)) return; this.view.selectedPart = id; this.highlight(); this.render(); this.onSelect(id); }
@@ -273,12 +333,16 @@ export class SoundScene {
     const ids = [...new Set([this.view.selectedPart, ...(this.focusContext || ['tube-wall', 'end-cap', 'probe-tip', 'readout'])])].slice(0, this.width < 480 ? 3 : 5), points = [];
     for (const id of ids) {
       if (id === 'particles' && !this.view.particles && !this.view.pressure) continue;
-      const part = this.components.get(id); if (!part) continue; const p = part.node.localToWorld(part.anchor.clone()).project(this.camera);
+      const part = this.components.get(id); if (!part || !this.actuallyVisible(part.node)) continue; const p = part.node.localToWorld(part.anchor.clone()).project(this.camera);
       if (Math.abs(p.x) > 1 || Math.abs(p.y) > 1 || p.z < -1 || p.z > 1) continue; points.push({ id, x: (p.x + 1) * this.width / 2, y: (1 - p.y) * this.height / 2 });
     }
     const width = this.width < 620 ? Math.min(130, this.width * .35) : 158, height = 30, placed = [];
     for (const p of points) {
       const candidates = [];
+      if (this.inspection) {
+        const box = { x: 12, y: 12, w: width, h: height }, end = { x: clamp(p.x, 18, 12 + width - 6), y: clamp(p.y, 12, 12 + height) };
+        candidates.push({ box, end, score: -1e9 });
+      }
       for (const dy of [-60, -99, 39, 78, -138, 117]) for (const dx of [0, -width * .7, width * .7, -width, width]) {
         const box = { x: clamp(p.x - width / 2 + dx, 9, this.width - width - 9), y: clamp(p.y + dy, 54, Math.max(54, this.height - 116)), w: width, h: height };
         if (placed.some(b => box.x < b.x + b.w + 7 && box.x + box.w + 7 > b.x && box.y < b.y + b.h + 7 && box.y + box.h + 7 > b.y)) continue;
@@ -313,13 +377,15 @@ export class SoundScene {
       for (const point of relative) { const depth = Math.max(.001, distance - point.dot(dir)), x = point.dot(right) / depth, y = point.dot(up) / depth; l = Math.min(l, x); r = Math.max(r, x); b = Math.min(b, y); t = Math.max(t, y); }
       target.addScaledVector(right, (l + r) * distance / 2).addScaledVector(up, (b + t) * distance / 2);
     }
-    this.updating = true; this.camera.zoom = 1; this.camera.updateProjectionMatrix(); this.controls.target.copy(target); this.camera.position.copy(target.clone().addScaledVector(dir, Math.min(10, distance))); this.controls.update(); this.updating = false; this.render(); this.onCameraChange(this.getCameraState()); return true;
+    this.updating = true; this.camera.zoom = 1; this.camera.updateProjectionMatrix(); this.controls.target.copy(target); this.camera.position.copy(target.clone().addScaledVector(dir, Math.min(10, distance))); this.controls.update(); this.updating = false; this.render(); this.onCameraChange(this.getProjectCameraState()); return true;
   }
   resetCamera(preset = 'iso') {
+    if (this.inspection) this.endInspection();
     this.focusContext = null; if (preset === 'cap') return this.focusPart('end-cap'); if (!['iso', 'side'].includes(preset)) return false;
     return this.fit(COMPONENTS.filter(part => part.id !== 'probe-cable').map(part => part.id), preset === 'side' ? [.04, .13, 1] : [.47, .58, 1], .77);
   }
   focusPart(id) {
+    if (this.inspection) this.endInspection();
     if (!this.components.has(id)) return false; let ids = [id], direction = [.25, .42, 1];
     if (id === 'end-cap') { ids = this.layout.capClosed ? ['end-cap', 'left-support'] : ['end-cap', 'cap-stand']; direction = [-1, .35, .65]; }
     else if (['probe-carriage', 'probe-tip'].includes(id)) { ids = ['probe-carriage', 'probe-tip']; direction = [.35, .6, 1]; }
@@ -343,9 +409,9 @@ export class SoundScene {
     for (let i = 0; i < data.count; i++) { const x = data.getX(i) * tube.scale.x, r = Math.hypot(data.getY(i), data.getZ(i)); xmin = Math.min(xmin, x); xmax = Math.max(xmax, x); rmin = Math.min(rmin, r); rmax = Math.max(rmax, r); }
     const matrix = new THREE.Matrix4(), point = new THREE.Vector3();
     const particlePositions = (this.particleEvidence || []).map(item => { this.particleMesh.getMatrixAt(item.instance, matrix); point.setFromMatrixPosition(matrix).applyMatrix4(this.particleMesh.matrixWorld); return { ...item, world: point.toArray().map(clean) }; });
-    const probe = world(this.probeMarker), capPosition = this.capDisk.geometry.getAttribute('position'); let localFaceY = Infinity;
-    for (let i = 0; i < capPosition.count; i++) localFaceY = Math.min(localFaceY, capPosition.getY(i));
-    const capFace = world(this.capDisk, [0, localFaceY, 0]);
+    const probe = world(this.probeMarker), capPosition = this.capDisk.geometry.getAttribute('position'); let localFaceX = -Infinity;
+    for (let i = 0; i < capPosition.count; i++) localFaceX = Math.max(localFaceX, capPosition.getX(i));
+    const capFace = world(this.capDisk, [localFaceX, 0, 0]);
     const ringPositions = this.nodeRings.filter(item => this.actuallyVisible(item.mesh)).map(item => ({ kind: item.kind, world: world(item.mesh) }));
     const ribbonPosition = this.pressureRibbon.geometry.getAttribute('position'), ribbonColor = this.pressureRibbon.geometry.getAttribute('color'), actualColors = [], pressureSamples = [];
     if (ribbonPosition && ribbonColor) for (let i = 0; i < (this.snapshot?.samples.length ?? 0); i++) {
@@ -360,13 +426,38 @@ export class SoundScene {
       pressureVisible: this.pressureRibbon.visible, particlesVisible: this.particleMesh.visible,
       pressureColors: actualColors, pressureSamples,
       labels: [...this.labels].filter(([, label]) => !label.button.hidden).map(([id, label]) => ({ id, left: parseFloat(label.button.style.left), top: parseFloat(label.button.style.top), width: label.button.offsetWidth, height: label.button.offsetHeight, anchor: [Number(label.dot.getAttribute('cx')), Number(label.dot.getAttribute('cy'))] })),
-      camera: this.getCameraState(), drawCalls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles, renderFrame: this.renderer.info.render.frame };
+      camera: this.getCameraState(), projectCamera: this.getProjectCameraState(), inspection: this.getInspection(), mechanical: this.mechanicalDebug(),
+      visibleParts: [...this.components].filter(([, part]) => this.actuallyVisible(part.node)).map(([id]) => id), groundVisible: this.ground.visible,
+      resources: { geometries: this.renderer.info.memory.geometries, textures: this.renderer.info.memory.textures },
+      drawCalls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles, renderFrame: this.renderer.info.render.frame };
+  }
+  mechanicalDebug() {
+    this.root.updateMatrixWorld(true);
+    const point = (mesh, p = [0, 0, 0]) => mesh.localToWorld(V(p)).toArray();
+    const radii = mesh => { const p = mesh.geometry.getAttribute('position'); let min = Infinity, max = -Infinity; for (let i = 0; i < p.count; i++) { const r = Math.hypot(p.getY(i), p.getZ(i)); min = Math.min(min, r); max = Math.max(max, r); } return { min, max }; };
+    const bounds = mesh => { mesh.geometry.computeBoundingBox(); return mesh.geometry.boundingBox.clone().applyMatrix4(mesh.matrixWorld); };
+    const bush = radii(this.probeBush), body = bounds(this.probeBody), guide = point(this.guideRail), seal = bounds(this.capSeal), cap = bounds(this.capDisk);
+    const supports = this.supportDetails.map(detail => ({ id: detail.id, bodyMin: bounds(detail.body).min.toArray(), bodyMax: bounds(detail.body).max.toArray(), bushes: detail.bushes.map((mesh, i) => ({ center: point(mesh), innerRadiusM: radii(mesh).min, outerRadiusM: radii(mesh).max, railRadiusM: G.rails.radiusM, radialClearanceM: radii(mesh).min - G.rails.radiusM, boreAxisOffsetM: Math.hypot(point(mesh)[1] - point(this.rails[i])[1], point(mesh)[2] - point(this.rails[i])[2]) })) }));
+    const x = this.node('probe-carriage').position.x, bracketInnerX = this.layout.railLengthM / 2 - .012 - G.guide.bracketWidthM / 2;
+    const seatHit = new THREE.Raycaster(V([this.layout.supportXs[0], G.tube.centerY, 0]), V([0, -1, 0])).intersectObject(this.supportDetails[0].saddle)[0];
+    const collarBottom = bounds(this.collars[0].full).min.y - (this.layout.collarY - G.tube.centerY), assembledSealFace = seal.max.x - this.capSeal.position.x;
+    return {
+      guide: { center: guide, radiusM: G.guide.radiusM, carriageCenter: point(this.probeBush), innerRadiusM: bush.min, outerRadiusM: bush.max, radialClearanceM: bush.min - G.guide.radiusM,
+        boreAxisOffsetM: Math.hypot(point(this.probeBush)[1] - guide[1], point(this.probeBush)[2] - guide[2]),
+        supportSideClearanceM: Math.min(...supports.map(s => s.bodyMin[2] - body.max.z)), endStopClearanceM: bracketInnerX - Math.abs(x) - G.guide.bushLengthM / 2,
+        boomTubeClearanceM: bounds(this.probeBoom).min.y - (this.layout.center[1] + G.tube.outerRadiusM) },
+      supports,
+      saddle: { radiusM: G.collar.outerRadiusM, centerY: G.tube.centerY, assembledContactGapM: seatHit ? collarBottom - seatHit.point.y : null, collarDisplayLiftM: this.layout.collarY - G.tube.centerY },
+      cap: { closurePlaneX: point(this.capDisk, [G.cap.thicknessM / 2, 0, 0])[0], sealFaceX: seal.max.x, sealDisplayWithdrawalM: this.capSeal.position.x,
+        sealInnerRadiusM: radii(this.capSeal).min, sealOuterRadiusM: radii(this.capSeal).max, grooveInnerRadiusM: G.cap.grooveInnerRadiusM, grooveOuterRadiusM: G.cap.grooveOuterRadiusM,
+        grooveDepthM: G.cap.grooveDepthM, assembledSealFaceX: assembledSealFace, assembledSealGapM: cap.max.x - assembledSealFace, representativeCompressedSeal: true },
+    };
   }
   resize() { if (this.disposed) return; this.width = Math.max(1, this.container.clientWidth); this.height = Math.max(1, this.container.clientHeight); this.renderer.setSize(this.width, this.height, false); this.camera.aspect = this.width / this.height; this.camera.updateProjectionMatrix(); this.render(); }
   render() { if (this.disposed) return; this.camera.updateMatrixWorld(); this.layoutLabels(); this.renderer.render(this.scene, this.camera); }
   dispose() {
     if (this.disposed) return; this.disposed = true; this.resizeObserver.disconnect(); this.controls.removeEventListener('change', this.controlsChanged); this.controls.dispose();
     for (const [type, listener] of [['pointerdown', this.pointerDown], ['pointerup', this.pointerUp], ['pointercancel', this.pointerCancel]]) this.renderer.domElement.removeEventListener(type, listener);
-    for (const geometry of this.geometries) geometry.dispose(); for (const material of this.materials) material.dispose(); for (const texture of this.textures) texture.dispose(); this.environment.dispose(); this.renderer.dispose(); this.overlay.remove(); this.renderer.domElement.remove(); this.container.classList.remove('sound-scene');
+    this.particleMesh.dispose(); for (const geometry of this.geometries) geometry.dispose(); for (const material of this.materials) material.dispose(); for (const texture of this.textures) texture.dispose(); this.environment.dispose(); this.renderer.dispose(); this.overlay.remove(); this.renderer.domElement.remove(); this.container.classList.remove('sound-scene');
   }
 }

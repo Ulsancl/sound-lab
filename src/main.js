@@ -5,6 +5,9 @@ import { COMPONENTS } from './geometry.js';
 import { SoundScene } from './scene.js';
 import { WaveChart } from './chart.js';
 import { TonePlayer } from './audio.js';
+import { soundDetail } from './detail-model.js';
+import { SoundDetailPanel } from './detail-panel.js';
+import './detail-panel.css';
 import { LESSONS, createGuide, lessonReady, confirmObservation, guideText } from './lessons.js';
 
 const $ = selector => document.querySelector(selector), $$ = selector => [...document.querySelectorAll(selector)];
@@ -19,6 +22,8 @@ let scene = null, initialCamera = null, guide = null, previous = null, busy = fa
 let running = false, frameId = null, lastTick = 0, lastPaint = 0, lastSave = 0;
 let saveTimer, toastTimer, recoveredRaw = null, storageBlocked = false;
 const chart = new WaveChart($('#wave-chart'), $('#frequency-chart'));
+const inspectionParts = new Set(['rail','tube-wall','tube-collars','left-support','right-support','end-cap','probe-carriage']);
+const detailPanel = new SoundDetailPanel($('#sound-details'), $('#part-facts'), $('#part-detail-note'), { onPhase: setPhase, onProbe: setProbe });
 const tone = new TonePlayer({ onChange: state => {
   $('#listen').disabled = state.pending || busy; $('#stop-tone').hidden = !state.playing && !state.pending;
   text('#audio-status', state.error || (state.pending ? '소리 예시 준비 중…' : state.playing ? `${fmt(state.frequencyHz, 1)} Hz 순음 재생 중 · 2초 후 종료` : '계산한 Hz의 순음 예시 · 탐침 녹음이나 예측 음압이 아닙니다.'));
@@ -31,7 +36,19 @@ function toast(message) {
   toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 6500);
 }
 function updateSnapshot() { snapshot = getSnapshot(experiment.config, { phaseRad: experiment.phaseRad, probeRatio: experiment.probeRatio }); }
-function capture() { return createProject({ experiment, comparison, view, camera: scene?.getCameraState() ?? initialCamera }); }
+function capture() { return createProject({ experiment, comparison, view, camera: scene?.getProjectCameraState?.() ?? scene?.getCameraState() ?? initialCamera }); }
+function selectPart(id) {
+  if (!COMPONENTS.some(part => part.id === id)) throw new RangeError('Unknown sound component');
+  view.selectedPart = id;
+  if (scene?.getInspection?.()) { if (inspectionParts.has(id)) scene.beginInspection(id); else scene.endInspection(); }
+  syncControls(); refresh(); scheduleSave();
+}
+function beginInspection(id = view.selectedPart) {
+  if (busy || !inspectionParts.has(id) || !scene?.beginInspection?.(id)) return false;
+  view.selectedPart = id; syncControls(); refresh(); $('#toast').hidden = true;
+  requestAnimationFrame(() => $('#scene').scrollIntoView({ block: 'nearest' })); scheduleSave(); return true;
+}
+function endInspection() { scene?.endInspection?.(); refresh(); scheduleSave(); }
 function saveLocal() {
   clearTimeout(saveTimer); if (storageBlocked || restoring) return;
   try { localStorage.setItem(STORAGE_KEY, serializeProject(capture())); text('#save-status', '이 기기에 자동 저장됨'); }
@@ -82,18 +99,18 @@ function changeConfig(patch) {
   if (busy) return;
   const config = normalizeConfig({ ...experiment.config, ...patch });
   if (Object.keys(config).every(key => config[key] === experiment.config[key])) { syncControls(); return; }
-  pause(); tone.stop(); experiment.config = config; updateSnapshot(); syncControls(); refresh(); scheduleSave();
+  pause(); tone.stop(); if (config.lengthM !== experiment.config.lengthM || config.boundary !== experiment.config.boundary) scene?.endInspection?.(); experiment.config = config; updateSnapshot(); syncControls(); refresh(); scheduleSave();
 }
 function remember() { syncTime(); previous = { project: capture(), guide: copy(guide) }; $('#undo-new').hidden = false; }
 function readProject(project, restoredGuide = null) {
   const saved = parseProject(serializeProject(project));
-  pause(); tone.stop(); restoring = true;
+  pause(); tone.stop(); scene?.endInspection?.(); restoring = true;
   try { ({ experiment, comparison } = saved); ({ view, camera: initialCamera } = saved.observation); guide = restoredGuide; chartDisplay = 'both'; updateSnapshot(); syncControls(); refresh(); if (initialCamera) scene?.setCameraState(initialCamera); else scene?.resetCamera(); }
   finally { restoring = false; }
   saveLocal();
 }
 function newExperiment() {
-  if (busy) return; pause(); tone.stop(); remember(); experiment = initialExperiment(DEFAULT_CONFIG); comparison = null; guide = null;
+  if (busy) return; pause(); tone.stop(); remember(); scene?.endInspection?.(); experiment = initialExperiment(DEFAULT_CONFIG); comparison = null; guide = null;
   view = normalizeView(DEFAULT_VIEW); chartDisplay = 'both'; updateSnapshot(); syncControls(); refresh(); scene?.resetCamera(); saveLocal(); toast('새 실험을 시작했습니다. 직전 실험은 되돌릴 수 있습니다.');
 }
 function setBusy(value) {
@@ -133,8 +150,13 @@ function refresh(paint = true) {
   text('#phase-reading', `${fmt(experiment.phaseRad * 180 / Math.PI, 1)}°`); $('#phase').value = experiment.phaseRad * 180 / Math.PI;
   $('#probe').value = experiment.probeRatio * 100; text('#probe-position', `${fmt(experiment.probeRatio * 100, 1)}%`); text('#probe-meters', `왼쪽에서 ${fmt(snapshot.probe.xM, 3)} m`);
   text('#probe-pressure', fmt(snapshot.probe.pressureRelative, 3)); text('#probe-displacement', fmt(snapshot.probe.displacementRelative, 3)); text('#probe-velocity', fmt(snapshot.probe.velocityRelative, 3));
-  const node = field => snapshot.nodes[field].some(ratio => Math.abs(ratio - experiment.probeRatio) < 1e-8);
-  text('#node-reading', `${node('pressureRatios') ? '압력 마디' : snapshot.probe.pressureEnvelope > 1 - 1e-8 ? '압력 배' : '압력 마디 사이'} · ${node('displacementRatios') ? '변위·속도 마디' : snapshot.probe.displacementEnvelope > 1 - 1e-8 ? '변위·속도 배' : '변위 마디 사이'} (고정 포락선 기준)`);
+  const detail = detailPanel.render(snapshot, view.selectedPart);
+  text('#node-reading', `${detail.probe.pressureIsNode ? '압력 마디' : detail.probe.pressureIsAntinode ? '압력 배' : '압력 마디 사이'} · ${detail.probe.motionIsNode ? '변위·속도 마디' : detail.probe.motionIsAntinode ? '변위·속도 배' : '변위 마디 사이'} (고정 포락선 기준)`);
+  const inspection = scene?.getInspection?.();
+  $('#inspection-strip').hidden = !inspection; text('#inspection-note', inspection?.note ?? '');
+  $('#inspect-part').disabled = !inspectionParts.has(view.selectedPart) || !scene?.beginInspection;
+  $('#inspect-part').setAttribute('aria-pressed', String(Boolean(inspection)));
+  text('#inspect-part', inspection ? '내부 관찰 마치기' : '내부 구조 자세히');
   const part = COMPONENTS.find(item => item.id === view.selectedPart);
   text('#part-description', part.description); text('#part-material', part.material); $('#part-action').hidden = part.id !== 'end-cap'; text('#part-action', experiment.config.boundary === 'open-open' ? '왼쪽 끝마개 닫기' : '왼쪽 끝마개 열기');
   $('#comparison-panel').hidden = !comparison;
@@ -143,7 +165,7 @@ function refresh(paint = true) {
   drawChart(); renderGuide(); if (paint) scene?.update(snapshot, view);
 }
 function startLesson(id) {
-  if (busy || !LESSONS[id]) return; pause(); tone.stop(); remember();
+  if (busy || !LESSONS[id]) return; pause(); tone.stop(); remember(); scene?.endInspection?.();
   experiment = initialExperiment(LESSONS[id].config); if (id === 'nodes') experiment.probeRatio = 0;
   guide = createGuide(id); comparison = null; chartDisplay = 'both'; view = normalizeView(DEFAULT_VIEW);
   updateSnapshot(); syncControls(); refresh(); scene?.resetCamera(); saveLocal();
@@ -175,7 +197,7 @@ function toggleFocus() { document.body.classList.toggle('focus-mode'); text('#fo
 function help() { pause(); tone.stop(); $('#help-dialog').showModal(); }
 
 $('#part-select').replaceChildren(...COMPONENTS.map(part => Object.assign(document.createElement('option'), { value: part.id, textContent: part.name })));
-try { scene = new SoundScene($('#scene'), { onSelect: id => { view.selectedPart = id; syncControls(); refresh(); scheduleSave(); }, onCameraChange: scheduleSave }); if (initialCamera) scene.setCameraState(initialCamera); }
+try { scene = new SoundScene($('#scene'), { onSelect: selectPart, onCameraChange: scheduleSave }); if (initialCamera) scene.setCameraState(initialCamera); }
 catch (error) { $('#scene-error').hidden = false; text('#scene-error', `3D 화면을 시작하지 못했습니다. ${error.message}`); }
 syncControls(); refresh(); if (!initialCamera) scene?.resetCamera();
 $('#length').addEventListener('input', event => changeConfig({ lengthM: Number(event.target.value) }));
@@ -189,9 +211,11 @@ for (const button of $$('[data-phase]')) button.addEventListener('click', () => 
 for (const button of $$('[data-probe]')) button.addEventListener('click', () => setProbe(Number(button.dataset.probe) / 100));
 $('#listen').addEventListener('click', () => { if (!busy) tone.play(snapshot.frequencyHz); }); $('#stop-tone').addEventListener('click', () => tone.stop());
 for (const input of $$('[data-view]')) input.addEventListener('change', () => { if (busy) { syncControls(); return; } view[input.dataset.view] = input.checked; refresh(); scheduleSave(); });
-for (const button of $$('[data-camera]')) button.addEventListener('click', () => scene?.resetCamera(button.dataset.camera));
-$('#part-select').addEventListener('change', event => { view.selectedPart = event.target.value; refresh(); scheduleSave(); });
-$('#focus-part').addEventListener('click', () => { scene?.focusPart(view.selectedPart); $('#toast').hidden = true; $('#scene').scrollIntoView({ block: 'nearest' }); }); $('#focus').addEventListener('click', toggleFocus);
+for (const button of $$('[data-camera]')) button.addEventListener('click', () => { scene?.endInspection?.(); scene?.resetCamera(button.dataset.camera); refresh(false); });
+$('#part-select').addEventListener('change', event => selectPart(event.target.value));
+$('#focus-part').addEventListener('click', () => { scene?.focusPart(view.selectedPart); refresh(false); $('#toast').hidden = true; $('#scene').scrollIntoView({ block: 'nearest' }); }); $('#focus').addEventListener('click', toggleFocus);
+$('#inspect-part').addEventListener('click', () => { if (scene?.getInspection?.()) endInspection(); else beginInspection(); });
+$('#end-inspection').addEventListener('click', endInspection);
 $('#part-action').addEventListener('click', () => changeConfig({ boundary: experiment.config.boundary === 'open-open' ? 'closed-open' : 'open-open' }));
 for (const button of $$('[data-lesson]')) button.addEventListener('click', () => startLesson(button.dataset.lesson));
 $('#guide-next').addEventListener('click', () => { if (busy) return; syncTime(); if (confirmObservation(guide, experiment, running)) { pause(); refresh(false); } });
@@ -213,4 +237,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) { pau
 new ResizeObserver(drawChart).observe($('#wave-chart'));
 window.soundLab = { getState: () => copy({ experiment, snapshot, view, comparison, running }), project: () => { syncTime(); return copy(capture()); },
   loadProject: raw => { const saved = parseProject(raw); remember(); readProject(saved); return copy(capture()); }, sceneDebug: () => scene?.getDebug() ?? null,
-  guide: () => copy(guide), chartDebug: () => copy(chart.debug), audioState: () => tone.getState(), setPhase };
+  guide: () => copy(guide), chartDebug: () => copy(chart.debug), audioState: () => tone.getState(), setPhase, setProbe, getDetail: () => soundDetail(snapshot),
+  getInspection: () => scene?.getInspection?.() ?? null, beginInspection, endInspection };
+window.render_game_to_text = () => JSON.stringify({ mode: running ? 'running' : 'paused', coordinateSystem: 'x along tube; positions in m, pressure/displacement/velocity independently normalized; visual cycle 2 s', snapshot, selectedPart: view.selectedPart, inspection: scene?.getInspection?.() ?? null, audio: tone.getState(), comparison: Boolean(comparison) });
+window.advanceTime = milliseconds => { if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new RangeError('Expected nonnegative milliseconds'); setPhase(experiment.phaseRad * 180 / Math.PI + milliseconds * .18); return copy(snapshot); };
