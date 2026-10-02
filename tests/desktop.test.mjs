@@ -193,6 +193,56 @@ try {
     assert.equal(chart.saved.frequencyHz, 343); assert.deepEqual(chart.xDomain, [0, 1]);
     assert.equal(imported.running, false); await assertSilent();
   });
+  await check('native detailed diagnostics distinguish instantaneous values, RMS and global energy in a restored mode', async () => {
+    const before = await project(), originalState = await state();
+    const expected = { 'probe.pressureRelative': -.5, 'probe.pressureEnvelope': 1, 'probe.pressureRmsRelative': Math.SQRT1_2,
+      'probe.displacementRelative': 0, 'probe.velocityRelative': 0, 'probe.displacementRmsRelative': 0,
+      'probe.velocityRmsRelative': 0, 'energy.probeCompression': .25, 'energy.probeKinetic': 0,
+      'energy.cycleTotal': .5, 'flux.instantaneousRelative': 0 };
+    for (const [key, value] of Object.entries(expected)) {
+      const actual = Number(await page.locator(`[data-detail-value="${key}"]`).getAttribute('data-raw'));
+      assert.ok(Number.isFinite(actual) && Math.abs(actual - value) < 1e-12, `${key}: ${actual} != ${value}`);
+    }
+    const detail = await page.evaluate(() => window.soundLab.getDetail());
+    assert.ok(Math.abs(detail.energy.wholeCompressionFraction - .25) < 1e-12);
+    assert.ok(Math.abs(detail.energy.wholeKineticFraction - .75) < 1e-12);
+    assert.ok(Math.abs(detail.mode.periodS * 1000 - 1000 / 514.5) < 1e-12);
+    assert.match(await page.locator('#detail-clock').textContent(), /ms.*2초.*누적 경과시간이 아닙니다/);
+    await page.locator('#part-select').selectOption('probe-tip');
+    const facts = await page.locator('#part-facts > div').evaluateAll(rows => Object.fromEntries(rows.map(row => [row.querySelector('dt').textContent, row.querySelector('dd').dataset.raw])));
+    assert.ok(Math.abs(Number(facts['순간 상대 압력']) + .5) < 1e-12);
+    assert.ok(Math.abs(Number(facts['압력 RMS']) - Math.SQRT1_2) < 1e-12);
+    await delay(100); assert.deepEqual((await state()).snapshot, originalState.snapshot);
+    await page.locator('#part-select').selectOption(before.observation.view.selectedPart);
+    sameProject(await project(), before); await assertSilent();
+  });
+  await check('native inspection saves the original camera and restored files exit temporary seal presentation', async () => {
+    await page.locator('#part-select').selectOption('end-cap'); const before = await project();
+    await page.locator('#inspect-part').click();
+    const scene = await page.evaluate(() => window.soundLab.sceneDebug());
+    assert.equal(scene.inspection.kind, 'cap'); assert.deepEqual(scene.visibleParts, ['end-cap']);
+    assert.deepEqual(scene.projectCamera, before.observation.camera); assert.notDeepEqual(scene.camera, before.observation.camera);
+    assert.ok(Math.abs(scene.mechanical.cap.sealDisplayWithdrawalM - .003) < 1e-12);
+    await page.locator('[data-view="exploded"]').uncheck(); await page.locator('[data-view="cutaway"]').uncheck();
+    const savedInspection = await project();
+    assert.deepEqual(savedInspection.experiment, before.experiment); assert.deepEqual(savedInspection.comparison, before.comparison);
+    assert.deepEqual(savedInspection.observation.camera, before.observation.camera);
+    const filename = path.join(evidence, '내부 관찰 원래 시점.sound.json');
+    await saveDialog(filename); await freshToast(() => page.locator('#save-project').click(), '저장했습니다');
+    sameProject(JSON.parse(await fs.readFile(filename, 'utf8')), savedInspection);
+    assert.equal((await page.evaluate(() => window.soundLab.getInspection())).kind, 'cap');
+    await openDialog(filename, true); await freshToast(() => page.locator('#open-project').click(), '열기를 취소');
+    assert.equal((await page.evaluate(() => window.soundLab.getInspection())).kind, 'cap'); sameProject(await project(), savedInspection);
+    await page.screenshot({ path: path.join(evidence, 'native-inspection.png') });
+    await openDialog(filename); await freshToast(() => page.locator('#open-project').click(), '복원했습니다');
+    assert.equal(await page.evaluate(() => window.soundLab.getInspection()), null);
+    assert.equal(await page.locator('#inspection-strip').isVisible(), false);
+    const restoredScene = await page.evaluate(() => window.soundLab.sceneDebug());
+    assert.deepEqual(restoredScene.camera, before.observation.camera); assert.equal(restoredScene.mechanical.cap.sealDisplayWithdrawalM, 0);
+    sameProject(await project(), savedInspection); await assertSilent();
+    await openDialog(projectPath); await freshToast(() => page.locator('#open-project').click(), '복원했습니다');
+    sameProject(await project(), saved);
+  });
   await check('native play/pause changes only slow phase and direct phase/probe edits keep comparison frozen', async () => {
     const before = await project();
     await menu('실험', '위상 재생 / 일시정지');

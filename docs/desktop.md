@@ -1,6 +1,6 @@
 # Windows 앱과 파일
 
-Sound Lab의 대상은 Windows 11 x64입니다. [릴리스](https://github.com/Ulsancl/sound-lab/releases/latest)의 `Sound-Lab-Setup-1.0.0.exe`와 같은 버전의 `.sha256` 파일을 사용합니다. 실제 화면·하드웨어·설치·업데이트 결과는 해당 릴리스 기록을 따릅니다.
+Sound Lab의 대상은 Windows 11 x64입니다. [릴리스](https://github.com/Ulsancl/sound-lab/releases/latest)의 `Sound-Lab-Setup-1.1.0.exe`와 같은 버전의 `.sha256` 파일을 사용합니다. 실제 화면·하드웨어·설치·업데이트 결과는 해당 릴리스 기록을 따릅니다.
 
 설치 파일을 열어 현재 사용자용 설치를 마친 뒤 바탕화면이나 시작 메뉴의 Sound Lab 아이콘으로 시작합니다. Node.js와 개발 서버 없이 로컬로 실행합니다. 코드 서명을 제공하지 않으므로 Windows가 게시자를 확인하지 못했다는 안내를 표시할 수 있습니다. 릴리스 출처와 파일 SHA-256을 확인하고 설치 여부를 결정하세요.
 
