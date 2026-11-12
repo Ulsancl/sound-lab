@@ -1,3 +1,4 @@
+import { artifactDirectory } from '../scripts/safe-files.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -5,7 +6,7 @@ import { chromium } from 'playwright';
 import { createServer } from 'vite';
 
 const root = path.resolve(import.meta.dirname, '..');
-const output = path.join(root, 'output/consumer');
+const output = artifactDirectory(root, path.join(root, 'output/consumer'));
 const hardware = process.env.SOUND_BROWSER_HARDWARE === '1';
 const checks = [], errors = [], externalRequests = [], evidence = [];
 let server, browser, page, gpu, failure;

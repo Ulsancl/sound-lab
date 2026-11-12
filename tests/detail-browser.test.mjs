@@ -1,3 +1,4 @@
+import { artifactDirectory } from '../scripts/safe-files.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -8,7 +9,8 @@ import { getSnapshot } from '../src/model.js';
 import { createProject, serializeProject } from '../src/project.js';
 import { describeSoundDetail } from '../src/detail-model.js';
 
-const root = path.resolve(import.meta.dirname, '..'), output = path.join(root, 'output/detail-browser');
+const root = path.resolve(import.meta.dirname, '..');
+const output = artifactDirectory(root, path.join(root, 'output/detail-browser'));
 await fs.mkdir(output, { recursive: true });
 const server = await createServer({ root, server: { host: '127.0.0.1', port: 5246, strictPort: true, hmr: false } });
 await server.listen();
