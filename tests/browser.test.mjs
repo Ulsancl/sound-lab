@@ -177,6 +177,30 @@ try {
     }
   });
 
+  await check('without WebGL, open and undo preserve the file camera but a new experiment clears it', async () => {
+    const fallback = await browser.newPage();
+    try {
+      await fallback.addInitScript(() => {
+        const getContext = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function(type, ...args) {
+          return /webgl/i.test(type) ? null : getContext.call(this, type, ...args);
+        };
+      });
+      await fallback.goto(page.url());
+      await fallback.waitForFunction(() => !!window.soundLab && !document.querySelector('#scene-error').hidden);
+      const camera = { position: [1, .25, .5], target: [0, 0, 0], zoom: 1.5 };
+      const result = await fallback.evaluate(camera => {
+        const api = window.soundLab, project = api.project();
+        project.observation.camera = camera;
+        const imported = api.loadProject(JSON.stringify(project)).observation.camera;
+        document.querySelector('#new-project').click();
+        const fresh = api.project().observation.camera;
+        document.querySelector('#undo-new').click();
+        return [imported, fresh, api.project().observation.camera];
+      }, camera);
+      assert.deepEqual(result, [camera, null, camera]);
+    } finally { await fallback.close(); }
+  });
   await check('future and corrupt automatic-save originals remain byte-exact and exportable after edits', async () => {
     for (const [name, raw] of [['future', '\ufeff{"type":"sound-lab-project","schemaVersion":99,"original":"한글 원문"}'], ['corrupt', '{"original":"손상 원문"']]) {
       const isolated = await browser.newContext({ viewport: { width: 1200, height: 900 }, acceptDownloads: true });
