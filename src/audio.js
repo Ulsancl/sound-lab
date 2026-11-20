@@ -24,8 +24,10 @@ export function createToneGraph(context, frequencyHz, { onEnded = () => {} } = {
       // Cancel future envelope points, fade from the bounded current level and stop.
       const elapsed = Math.max(0, now - startTime);
       const level = elapsed < ATTACK_S ? TONE_GAIN * elapsed / ATTACK_S : elapsed > TONE_DURATION_S - RELEASE_S ? TONE_GAIN * Math.max(0, (TONE_DURATION_S - elapsed) / RELEASE_S) : TONE_GAIN;
-      gain.gain.cancelScheduledValues(now); gain.gain.setValueAtTime(level, now); gain.gain.linearRampToValueAtTime(0, now + .01);
-      oscillator.stop(Math.min(endTime, now + .01));
+      if (now >= endTime) return; // The original release has finished on the audio clock.
+      const stopAt = Math.min(endTime, now + .01);
+      gain.gain.cancelScheduledValues(now); gain.gain.setValueAtTime(level, now); gain.gain.linearRampToValueAtTime(0, stopAt);
+      oscillator.stop(stopAt);
     } };
 }
 
@@ -41,7 +43,7 @@ export class TonePlayer {
     this.stop(); const generation = this.generation;
     this.report({ pending: true, error: null });
     try {
-      this.context ??= this.createContext();
+      if (!this.context || this.context.state === 'closed') this.context = this.createContext();
       await this.context.resume();
       if (this.disposed || generation !== this.generation) return false;
       this.graph = createToneGraph(this.context, frequencyHz, { onEnded: () => {

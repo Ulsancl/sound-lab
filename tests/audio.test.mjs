@@ -36,3 +36,23 @@ test('completion and an unavailable audio device leave a reusable non-playing st
   const missing = new TonePlayer({ createContext() { throw new Error('unavailable'); } });
   assert.equal(await missing.play(343), false); assert.match(missing.getState().error, /화면 실험/); missing.dispose();
 });
+
+test('cancelling in the last ten milliseconds fades to zero by the actual stop', () => {
+  const ctx = context(), graph = createToneGraph(ctx, 343);
+  ctx.currentTime = graph.endTime - .004;
+  graph.stop();
+  assert.deepEqual(ctx.events.at(-2), ['gain', 'linearRampToValueAtTime', 0, graph.endTime]);
+  assert.deepEqual(ctx.events.at(-1), ['stop', graph.endTime]);
+});
+
+test('a closed device context is replaced on the next listen request', async () => {
+  const first = context(), second = context(), contexts = [first, second];
+  const player = new TonePlayer({ createContext: () => contexts.shift() });
+  assert.equal(await player.play(343), true);
+  first.nodes[0].onended();
+  first.state = 'closed';
+  first.resume = async () => { throw new Error('closed'); };
+  assert.equal(await player.play(514.5), true);
+  assert.equal(first.nodes.length, 1); assert.equal(second.nodes.length, 1);
+  assert.equal(player.getState().frequencyHz, 514.5); player.dispose();
+});

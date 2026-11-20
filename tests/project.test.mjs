@@ -1,3 +1,4 @@
+import { archiveOriginal } from '../src/recovery.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createProject, parseProject, serializeProject, normalizeView, DEFAULT_VIEW, ProjectError } from '../src/project.js';
@@ -99,4 +100,22 @@ test('one BOM and the UTF-8 byte cap preserve malformed text without changing it
   const value = createProject(), raw = serializeProject(value); assert.deepEqual(parseProject('\ufeff' + raw), value);
   for (const input of ['\ufeff\ufeff' + raw, '{원본\r\n', null, 4]) assert.throws(() => parseProject(input), e => e.code === 'INVALID_JSON');
   for (const input of [' '.repeat(10 * 1024 * 1024 + 1), '가'.repeat(4 * 1024 * 1024)]) assert.throws(() => parseProject(input), e => e.code === 'PROJECT_TOO_LARGE');
+});
+
+test('recovery reuses exact legacy backups and never overwrites a different original', t => {
+  t.mock.method(Date, 'now', () => 1000);
+  const records = new Map([['experiment', 'protected primary'], ['experiment-original-1000', 'older original']]);
+  const storage = {
+    get length() { return records.size; },
+    key: index => [...records.keys()][index],
+    getItem: key => records.get(key) ?? null,
+    setItem: (key, raw) => records.set(key, raw),
+  };
+  archiveOriginal(storage, 'experiment', 'older original');
+  archiveOriginal(storage, 'experiment', '\ufeffnew original');
+  archiveOriginal(storage, 'experiment', '\ufeffnew original');
+  assert.deepEqual([...records], [
+    ['experiment', 'protected primary'], ['experiment-original-1000', 'older original'],
+    ['experiment-original-1001', '\ufeffnew original'],
+  ]);
 });

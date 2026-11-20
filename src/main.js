@@ -1,3 +1,4 @@
+import { archiveOriginal } from './recovery.js';
 import './style.css';
 import { DEFAULT_CONFIG, normalizeConfig, getSnapshot, wrapPhase, normalizeProbeRatio } from './model.js';
 import { createProject, parseProject, serializeProject, normalizeView, DEFAULT_VIEW } from './project.js';
@@ -57,7 +58,7 @@ function saveLocal() {
 function scheduleSave() { if (!restoring && !storageBlocked) { clearTimeout(saveTimer); saveTimer = setTimeout(saveLocal, 230); } }
 function protectOriginal(raw, future) {
   storageBlocked = true; recoveredRaw = raw;
-  try { localStorage.setItem(`${STORAGE_KEY}-original-${Date.now()}`, raw); } catch { /* Original remains exportable in memory. */ }
+  try { archiveOriginal(localStorage, STORAGE_KEY, raw); } catch { /* Original remains exportable in memory. */ }
   $('#storage-recovery').hidden = false;
   if (future) text('#storage-recovery strong', '더 새로운 버전의 실험입니다. 원문을 보존합니다.');
   text('#save-status', '자동 저장 원문 보호 중 · 현재 실험은 파일로 보관하세요');
@@ -110,7 +111,7 @@ function readProject(project, restoredGuide = null) {
   saveLocal();
 }
 function newExperiment() {
-  if (busy) return; pause(); tone.stop(); remember(); scene?.endInspection?.(); experiment = initialExperiment(DEFAULT_CONFIG); comparison = null; guide = null;
+  if (busy) return; pause(); tone.stop(); remember(); scene?.endInspection?.(); initialCamera = null; experiment = initialExperiment(DEFAULT_CONFIG); comparison = null; guide = null;
   view = normalizeView(DEFAULT_VIEW); chartDisplay = 'both'; updateSnapshot(); syncControls(); refresh(); scene?.resetCamera(); saveLocal(); toast('새 실험을 시작했습니다. 직전 실험은 되돌릴 수 있습니다.');
 }
 function setBusy(value) {
@@ -166,7 +167,7 @@ function refresh(paint = true) {
 }
 function startLesson(id) {
   if (busy || !LESSONS[id]) return; pause(); tone.stop(); remember(); scene?.endInspection?.();
-  experiment = initialExperiment(LESSONS[id].config); if (id === 'nodes') experiment.probeRatio = 0;
+  initialCamera = null; experiment = initialExperiment(LESSONS[id].config); if (id === 'nodes') experiment.probeRatio = 0;
   guide = createGuide(id); comparison = null; chartDisplay = 'both'; view = normalizeView(DEFAULT_VIEW);
   updateSnapshot(); syncControls(); refresh(); scene?.resetCamera(); saveLocal();
   $('#lesson-guide').scrollIntoView({ block: 'nearest' });
