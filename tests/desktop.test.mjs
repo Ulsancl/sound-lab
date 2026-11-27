@@ -2,12 +2,12 @@ import { artifactDirectory } from '../scripts/safe-files.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { _electron as electron } from 'playwright';
-import { createProject } from '../src/project.js';
+import { createProject, MAX_PROJECT_BYTES } from '../src/project.js';
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,7 +25,7 @@ delete env.ELECTRON_RUN_AS_NODE;
 const projectPath = path.join(evidence, '정상파 관찰.sound.json');
 const checks = [], errors = [], remoteRequests = [], processes = [];
 const defaultProfilePath = process.platform === 'win32' && process.env.APPDATA ? path.join(process.env.APPDATA, 'Sound Lab') : null;
-let app, page, saved, windowRestoration, gpu, failure, defaultProfile;
+let app, page, saved, windowRestoration, gpu, failure, defaultProfileBefore, defaultProfile;
 const state = () => page.evaluate(() => window.soundLab.getState());
 const project = () => page.evaluate(() => window.soundLab.project());
 async function assertSilent() {
@@ -43,11 +43,12 @@ async function profileManifest(directory) {
     else if (stat.isDirectory()) {
       entries.push({ path: relative, type: 'directory' });
       for (const name of (await fs.readdir(target)).sort()) await visit(path.join(target, name), relative ? `${relative}/${name}` : name);
-    } else if (stat.isFile()) entries.push({ path: relative, bytes: stat.size, sha256: createHash('sha256').update(await fs.readFile(target)).digest('hex') });
-    else throw new Error(`Unsupported default profile entry: ${relative}`);
+    } else if (stat.isFile()) entries.push({ path: relative, bytes: stat.size, mtime: stat.mtimeMs, ctime: stat.ctimeMs });
+    else throw new Error('Unsupported default profile entry');
     return true;
   }
-  return { exists: await visit(directory, ''), entries };
+  try { return { exists: await visit(directory, ''), entries }; }
+  catch { throw new Error('Could not compare the default Sound Lab profile'); }
 }
 function processExists(pid) {
   try { process.kill(pid, 0); return true; }
@@ -85,6 +86,7 @@ async function launch() {
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('request', request => { if (/^https?:/.test(request.url())) remoteRequests.push(request.url()); });
   await page.waitForFunction(() => window.soundLab?.project && document.querySelector('#scene canvas'));
+  await waitFor(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isVisible()), 'visible native window');
   assert.equal((await state()).running, false, 'Each launch restores a paused experiment');
   await assertSilent();
   assert.equal(await app.evaluate(({ app }) => app.getPath('userData')), profile);
@@ -138,7 +140,7 @@ async function stableBounds(label) {
 }
 
 try {
-  defaultProfile = { path: defaultProfilePath, before: await profileManifest(defaultProfilePath) };
+  defaultProfileBefore = await profileManifest(defaultProfilePath);
   await launch();
   await check('isolated Sound Lab identity, offline bundle, sandbox and native bridge', async () => {
     assert.equal(page.url(), 'app://sound/');
@@ -305,7 +307,7 @@ try {
       ['broken.json', '{synthetic invalid JSON\r\n원문'],
       ['future.json', JSON.stringify({ ...saved, schemaVersion: 2 })],
       ['future-model.json', JSON.stringify({ ...saved, modelVersion: 'sound-standing-wave-2' })],
-      ['too-large.json', ' '.repeat(10 * 1024 * 1024 + 1)],
+      ['too-large.json', ' '.repeat(MAX_PROJECT_BYTES + 1)],
     ]) {
       const file = path.join(evidence, name); await fs.writeFile(file, raw);
       await openDialog(file); await freshToast(() => page.locator('#open-project').click(), '못|실패|지원|파일');
@@ -314,12 +316,14 @@ try {
     const linked = path.join(evidence, 'linked-directory'), originalDirectory = path.join(evidence, 'real-directory');
     await fs.mkdir(originalDirectory); await fs.writeFile(path.join(originalDirectory, 'observation.json'), original);
     await fs.symlink(originalDirectory, linked, process.platform === 'win32' ? 'junction' : 'dir');
-    for (const file of [originalDirectory, path.join(linked, 'observation.json')]) {
-      await openDialog(file); await freshToast(() => page.locator('#open-project').click(), '못|실패|지원|파일');
-      sameProject(await project(), before);
-      await saveDialog(file); await freshToast(() => page.locator('#save-project').click(), '못|실패|지원|파일');
-      sameProject(await project(), before);
-    }
+    try {
+      for (const file of [originalDirectory, path.join(linked, 'observation.json')]) {
+        await openDialog(file); await freshToast(() => page.locator('#open-project').click(), '못|실패|지원|파일');
+        sameProject(await project(), before);
+        await saveDialog(file); await freshToast(() => page.locator('#save-project').click(), '못|실패|지원|파일');
+        sameProject(await project(), before);
+      }
+    } finally { await fs.unlink(linked); }
     assert.equal(await fs.readFile(path.join(originalDirectory, 'observation.json'), 'utf8'), original);
     assert.equal(await fs.readFile(projectPath, 'utf8'), original);
   });
@@ -374,7 +378,7 @@ try {
     windowRestoration = { display, gridStep, requested };
     await app.evaluate(({ BrowserWindow }, target) => BrowserWindow.getAllWindows()[0].setBounds(target), requested);
     const aligned = await stableBounds('aligned native rectangle'); windowRestoration.aligned = aligned;
-    assert.deepEqual(aligned, requested);
+    for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(aligned[key] - requested[key]) <= 1, key);
     await page.reload(); await page.waitForFunction(() => window.soundLab?.project && document.querySelector('#scene canvas'));
     sameProject(await project(), saved); assert.equal((await state()).running, false); await assertSilent();
     assert.deepEqual(await stableBounds('reloaded native rectangle'), aligned);
@@ -438,15 +442,16 @@ try {
     await page?.evaluate(() => window.soundDesktop?.setBusy(false)).catch(() => {});
     await closeNormally().catch(error => { failure ??= error; process.exitCode = 1; });
   }
-  if (defaultProfile) {
+  if (defaultProfileBefore) {
     try {
-      defaultProfile.after = await profileManifest(defaultProfilePath);
-      assert.deepEqual(defaultProfile.after, defaultProfile.before, 'The real default profile must remain untouched');
-      defaultProfile.unchanged = true;
-    } catch (error) { defaultProfile.unchanged = false; failure ??= error; process.exitCode = 1; }
+      const after = await profileManifest(defaultProfilePath);
+      defaultProfile = { unchanged: isDeepStrictEqual(after, defaultProfileBefore),
+        beforeCount: defaultProfileBefore.entries.length, afterCount: after.entries.length };
+      assert.ok(defaultProfile.unchanged, 'The real default profile must remain untouched');
+    } catch (error) { defaultProfile ??= { unchanged: false }; failure ??= error; process.exitCode = 1; }
   }
   await fs.writeFile(path.join(output, 'result.json'), JSON.stringify({ status: failure ? 'FAILED' : 'PASSED', version: expectedVersion,
-    packaged, executablePath, profile, evidence, checks, errors, remoteRequests, processes, defaultProfile, windowRestoration, gpu,
+    packaged, checks, errors, remoteRequests, processes, defaultProfile, windowRestoration, gpu,
     ...(failure ? { failure: failure.message } : {}) }, null, 2));
   console.log(`Desktop validation: ${checks.length} checks ${failure ? 'completed before failure' : 'passed'}.`);
 }

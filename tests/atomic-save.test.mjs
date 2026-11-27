@@ -3,26 +3,33 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { atomicWriteProject, WINDOWS_RETRY_DELAYS_MS } from '../desktop/atomic-save.cjs';
+import { readBounded } from '../desktop/project-io.cjs';
+import { powershellPath, powershellArgs } from '../desktop/windows-powershell.cjs';
+import { secureDirectory, stagingDirectory } from '../scripts/safe-files.mjs';
 
 const previous = '{"original":"보존할 실험"}', replacement = '{"replacement":"완료된 실험"}';
-const scratchRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'output', 'atomic-save-tests');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const scratchRoot = path.join(root, 'output', 'atomic-save-tests');
 const failure = code => Object.assign(new Error(`synthetic ${code}`), { code });
 async function fixture(t) {
-  await fs.mkdir(scratchRoot, { recursive: true });
-  const directory = await fs.mkdtemp(path.join(scratchRoot, 'fixture-'));
+  secureDirectory(root, scratchRoot);
+  const directory = stagingDirectory(scratchRoot);
   t.after(async () => {
     const resolved = path.resolve(directory);
     assert.equal(path.dirname(resolved), scratchRoot);
-    assert.ok(path.basename(resolved).startsWith('fixture-'));
+    assert.ok(path.basename(resolved).startsWith('.security-stage-'));
     await fs.rm(resolved, { recursive: true, force: true });
   });
   const target = path.join(directory, 'experiment.json');
   await fs.writeFile(target, previous);
   const validateTarget = async filename => {
-    assert.equal(filename, target);
-    const stat = await fs.lstat(filename);
+    let stat;
+    try { stat = await fs.lstat(filename); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
     if (!stat.isFile() || stat.isSymbolicLink()) throw failure('UNSAFE_TARGET');
+    return stat;
   };
   return { directory, target, validateTarget };
 }
@@ -90,10 +97,65 @@ test('a failed flush closes and removes the incomplete sibling without touching 
   let closed = false, renamed = false;
   const operations = { ...fs, open: async (...args) => {
     const handle = await fs.open(...args);
-    return { writeFile: (...values) => handle.writeFile(...values), sync: async () => { throw failure('EIO'); },
+    return { writeFile: (...values) => handle.writeFile(...values), stat: () => handle.stat(),
+      chown: (...values) => handle.chown(...values), chmod: (...values) => handle.chmod(...values),
+      sync: async () => { throw failure('EIO'); },
       close: async () => { closed = true; await handle.close(); } };
   }, rename: async () => { renamed = true; } };
   await assert.rejects(atomicWriteProject(value.target, replacement, { operations, validateTarget: value.validateTarget }), { code: 'EIO' });
   assert.equal(closed, true); assert.equal(renamed, false);
   await unchangedAndClean(value);
+});
+
+test('bounded reads stop after the limit and one sentinel byte, including short reads', async () => {
+  const totalRead = [];
+  const handle = { async read(buffer, offset, length, position) {
+    totalRead.push({ position, length });
+    const bytesRead = Math.min(2, length);
+    buffer.fill(0x20, offset, offset + bytesRead);
+    return { bytesRead };
+  } };
+  await assert.rejects(readBounded(handle, 4, () => failure('PROJECT_TOO_LARGE')), { code: 'PROJECT_TOO_LARGE' });
+  assert.deepEqual(totalRead, [{ position: 0, length: 5 }, { position: 2, length: 3 }, { position: 4, length: 1 }]);
+});
+
+test('real replacement preserves file permissions and new projects start private', async t => {
+  const { directory, target, validateTarget } = await fixture(t);
+  const created = path.join(directory, '한글 관찰.sound.json');
+  await atomicWriteProject(created, replacement, { validateTarget });
+  assert.equal(await fs.readFile(created, 'utf8'), replacement);
+  if (process.platform === 'win32') {
+    function acl(file, operation = '') {
+      const command = `$ErrorActionPreference = 'Stop'
+        [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+        $file = [IO.FileInfo]::new([Console]::In.ReadToEnd())
+        $acl = $file.GetAccessControl()
+        ${operation}
+        $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)`;
+      const result = spawnSync(powershellPath(), powershellArgs(command), { input: file, encoding: 'utf8', windowsHide: true });
+      assert.equal(result.status, 0, result.stderr);
+      // ReplaceFile can update the auto-inheritance bookkeeping flag.
+      return result.stdout.trim().replace(/^D:PAI(?=\()/, 'D:P');
+    }
+    const privateAcl = acl(created);
+    assert.match(privateAcl, /^D:P/);
+    assert.equal(privateAcl.match(/\(A;/g).length, 1);
+    const original = acl(target, `
+        $acl.SetAccessRuleProtection($true, $false)
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+          [Security.Principal.WindowsIdentity]::GetCurrent().User, 'FullControl', 'Allow'))
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+          [Security.Principal.SecurityIdentifier]::new('S-1-5-18'), 'Read', 'Allow'))
+        $file.SetAccessControl($acl)`);
+    assert.notEqual(original, privateAcl);
+    await atomicWriteProject(target, replacement, { validateTarget });
+    assert.equal(acl(target), original);
+  } else {
+    assert.equal((await fs.stat(created)).mode & 0o777, 0o600);
+    await fs.chmod(target, 0o640);
+    await atomicWriteProject(target, replacement, { validateTarget });
+    assert.equal((await fs.stat(target)).mode & 0o777, 0o640);
+  }
+  assert.equal(await fs.readFile(target, 'utf8'), replacement);
+  assert.deepEqual((await fs.readdir(directory)).sort(), [path.basename(target), path.basename(created)].sort());
 });

@@ -317,9 +317,18 @@ try {
 
   await check('explicit tone playback stays independent of probe and slow phase, and stops on config, file and hidden actions', async () => {
     await length(.5); await select('boundary', 'open-open'); await select('mode', 1);
-    await page.locator('#listen').click(); await page.waitForFunction(() => window.soundLab.audioState().playing); near((await audio()).frequencyHz, 343);
+    async function listenAt(frequencyHz) {
+      await page.locator('#listen').click();
+      const observation = await page.waitForFunction(() => {
+        const sample = window.soundLab.audioState();
+        return sample.playing ? sample : null;
+      });
+      try { near((await observation.jsonValue()).frequencyHz, frequencyHz); }
+      finally { await observation.dispose(); }
+    }
+    await listenAt(343);
     await probe(100); await phase(90); near((await audio()).frequencyHz, 343); assert.equal((await audio()).playing, true);
-    await select('mode', 2); assert.equal((await audio()).playing, false); await page.locator('#listen').click(); await page.waitForFunction(() => window.soundLab.audioState().playing); near((await audio()).frequencyHz, 686);
+    await select('mode', 2); assert.equal((await audio()).playing, false); await listenAt(686);
     await page.locator('#play').click(); await hidden(); assert.equal((await audio()).playing, false); assert.equal((await state()).running, false);
     await page.locator('#listen').click(); await page.waitForFunction(() => window.soundLab.audioState().playing); const pending = page.waitForEvent('download'); await page.locator('#save-project').click(); await pending; assert.equal((await audio()).playing, false);
     await page.locator('#listen').click(); await page.waitForFunction(() => window.soundLab.audioState().playing); await page.waitForFunction(() => !window.soundLab.audioState().playing, undefined, { timeout: 5000 });
