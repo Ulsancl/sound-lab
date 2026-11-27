@@ -1,8 +1,8 @@
 import { solveMode, sampleAt } from './model.js';
 import { GEOMETRY, tubeLayout } from './geometry.js';
+import { DISPLAY_PERIOD_S } from './project.js';
 
 const TAU = 2 * Math.PI;
-const DISPLAY_PERIOD_S = 2;
 const cleanZero = value => value === 0 ? 0 : value;
 const finite = value => typeof value === 'number' && Number.isFinite(value);
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -45,7 +45,9 @@ function nearest(positions, ratio, lengthM) {
 /** Pure diagnostics of the existing ideal mode. Energies and flux are
  * dimensionless coefficients, not calibrated J, J/m³, W or W/m².
  * realPhaseTimeS is a location within one acoustic cycle, not elapsed history. */
-export function soundDetail(snapshot) {
+export function soundDetail(snapshot, { displayPeriodS = DISPLAY_PERIOD_S.default } = {}) {
+  if (!finite(displayPeriodS) || displayPeriodS < DISPLAY_PERIOD_S.min || displayPeriodS > DISPLAY_PERIOD_S.max)
+    throw new RangeError(`displayPeriodS must be between ${DISPLAY_PERIOD_S.min} and ${DISPLAY_PERIOD_S.max} seconds`);
   const { mode: solved, probe: p } = checkedSnapshot(snapshot);
   const { lengthM } = snapshot.config, phaseFraction = snapshot.phaseRad / TAU;
   const positionsOf = ratios => ratios.map(ratio => ({ ratio, xM: ratio * lengthM }));
@@ -69,8 +71,8 @@ export function soundDetail(snapshot) {
       omegaRadPerS: TAU * solved.frequencyHz, waveNumberRadPerM: solved.waveNumberRadPerM, harmonic: solved.harmonic,
       quarterWavelengthM: solved.wavelengthM / 4, halfWavelengthM: solved.wavelengthM / 2,
       phaseFraction, realPhaseTimeS: phaseFraction * solved.periodS,
-      displayPeriodS: DISPLAY_PERIOD_S, displayPhaseTimeS: phaseFraction * DISPLAY_PERIOD_S,
-      slowdownRatio: DISPLAY_PERIOD_S / solved.periodS,
+      displayPeriodS, displayPhaseTimeS: phaseFraction * displayPeriodS,
+      slowdownRatio: displayPeriodS / solved.periodS,
     },
     probe: {
       positionRatio: p.positionRatio, xM: p.xM,

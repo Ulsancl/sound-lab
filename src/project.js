@@ -3,6 +3,7 @@ import { DEFAULT_VIEW, COMPONENTS } from './geometry.js';
 
 export { DEFAULT_VIEW };
 export const projectType = 'sound-lab-project', projectVersion = 1, projectModelVersion = MODEL_VERSION;
+export const DISPLAY_PERIOD_S = Object.freeze({ min: .5, max: 8, default: 2 });
 const MAX_BYTES = 10 * 1024 * 1024, TAU = 2 * Math.PI;
 const flags = ['cutaway', 'particles', 'pressure', 'exploded', 'labels'];
 const parts = new Set(COMPONENTS.map(part => part.id));
@@ -30,6 +31,9 @@ export function normalizeView(input) {
   const value = record(input) ? input : {};
   return { ...Object.fromEntries(flags.map(key => [key, typeof value[key] === 'boolean' ? value[key] : DEFAULT_VIEW[key]])),
     selectedPart: parts.has(value.selectedPart) ? value.selectedPart : DEFAULT_VIEW.selectedPart };
+}
+export function normalizeDisplayPeriodS(value) {
+  return finite(value) ? Math.min(DISPLAY_PERIOD_S.max, Math.max(DISPLAY_PERIOD_S.min, value)) : DISPLAY_PERIOD_S.default;
 }
 function savedView(value) {
   shape(value, [...flags, 'selectedPart'], '관찰 화면');
@@ -76,10 +80,15 @@ function validateProject(value) {
   if (value.schemaVersion !== projectVersion) fail('지원하지 않는 저장 형식 버전입니다.', 'UNSUPPORTED_SCHEMA');
   modelVersion(value.modelVersion);
   shape(value, ['type', 'schemaVersion', 'modelVersion', 'experiment', 'comparison', 'observation'], '소리 실험 파일');
-  shape(value.observation, ['view', 'camera'], '관찰 기록');
+  shape(value.observation, ['view', 'camera'], '관찰 기록', ['displayPeriodS']);
+  const observation = { view: savedView(value.observation.view), camera: savedCamera(value.observation.camera) };
+  if (Object.hasOwn(value.observation, 'displayPeriodS')) {
+    number(value.observation.displayPeriodS, '화면 한 주기(초)', DISPLAY_PERIOD_S.min, DISPLAY_PERIOD_S.max);
+    observation.displayPeriodS = value.observation.displayPeriodS;
+  }
   return { type: projectType, schemaVersion: projectVersion, modelVersion: MODEL_VERSION,
     experiment: savedExperiment(value.experiment), comparison: savedComparison(value.comparison),
-    observation: { view: savedView(value.observation.view), camera: savedCamera(value.observation.camera) } };
+    observation };
 }
 /** Live defaults only. File imports always use strict parseProject without repair. */
 export function createProject(input = {}) {
@@ -90,8 +99,9 @@ export function createProject(input = {}) {
   let comparison = null, camera = null;
   if (value.comparison !== undefined) try { comparison = savedComparison(value.comparison); } catch (error) { if (!(error instanceof ProjectError)) throw error; }
   if (value.camera !== undefined) try { camera = savedCamera(value.camera); } catch (error) { if (!(error instanceof ProjectError)) throw error; }
-  return { type: projectType, schemaVersion: projectVersion, modelVersion: MODEL_VERSION, experiment, comparison,
-    observation: { view: normalizeView(value.view), camera } };
+  const observation = { view: normalizeView(value.view), camera };
+  if (value.displayPeriodS !== undefined) observation.displayPeriodS = normalizeDisplayPeriodS(value.displayPeriodS);
+  return { type: projectType, schemaVersion: projectVersion, modelVersion: MODEL_VERSION, experiment, comparison, observation };
 }
 export function parseProject(text) {
   if (typeof text !== 'string') fail('실험 파일은 JSON 텍스트여야 합니다.', 'INVALID_JSON');
