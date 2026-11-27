@@ -31,3 +31,19 @@ test('artifacts replace regular files atomically and directory publication keeps
   publishDirectory(root, source, destination);
   assert.equal(readInput(root, path.join(destination, 'app')).toString(), 'new');
 });
+
+test('directory publication rejects junctions in staged output and a dangling output path', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'safe-output-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const stage = stagingDirectory(root), output = path.join(stage, 'output'), target = path.join(root, 'dist');
+  const missing = path.join(root, 'missing');
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  fs.mkdirSync(output);
+  fs.symlinkSync(missing, path.join(output, 'linked'), linkType);
+  assert.throws(() => publishDirectory(root, output, target), /Symlinks|canonical/);
+  fs.unlinkSync(path.join(output, 'linked'));
+  fs.symlinkSync(missing, target, linkType);
+  assert.throws(() => publishDirectory(root, output, target), /Symlinks|canonical/);
+  assert.ok(fs.lstatSync(target).isSymbolicLink());
+  assert.equal(fs.existsSync(missing), false);
+});

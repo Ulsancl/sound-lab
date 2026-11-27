@@ -3,6 +3,14 @@
   "productName": "Sound Lab",
   "copyright": "Sound Lab",
   "asar": true,
+  "electronFuses": {
+    "runAsNode": false,
+    "enableNodeOptionsEnvironmentVariable": false,
+    "enableNodeCliInspectArguments": false,
+    "enableEmbeddedAsarIntegrityValidation": true,
+    "onlyLoadAppFromAsar": true,
+    "grantFileProtocolExtraPrivileges": false
+  },
   "publish": null,
   "electronDist": "node_modules/electron/dist",
   "directories": {
@@ -11,6 +19,7 @@
   },
   "files": [
     "desktop/**/*.cjs",
+    "desktop/save-windows.ps1",
     "resources/app.ico",
     "src/project.js",
     "src/model.js",

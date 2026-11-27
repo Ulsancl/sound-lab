@@ -98,6 +98,10 @@ test('future format and model versions protect originals and unrelated products 
 
 test('one BOM and the UTF-8 byte cap preserve malformed text without changing it', () => {
   const value = createProject(), raw = serializeProject(value); assert.deepEqual(parseProject('\ufeff' + raw), value);
+  const encode = value => new TextEncoder().encode(value);
+  assert.deepEqual(parseProject(encode('\ufeff' + raw + ' '.repeat(256 * 1024))), value);
+  assert.throws(() => parseProject(new Uint8Array([0xc3, 0x28])), e => e.code === 'INVALID_JSON');
+  assert.throws(() => parseProject(encode('\ufeff\ufeff' + raw)), e => e.code === 'INVALID_JSON');
   for (const input of ['\ufeff\ufeff' + raw, '{원본\r\n', null, 4]) assert.throws(() => parseProject(input), e => e.code === 'INVALID_JSON');
   for (const input of [' '.repeat(10 * 1024 * 1024 + 1), '가'.repeat(4 * 1024 * 1024)]) assert.throws(() => parseProject(input), e => e.code === 'PROJECT_TOO_LARGE');
 });

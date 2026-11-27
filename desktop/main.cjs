@@ -3,18 +3,21 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { Worker } = require('node:worker_threads');
 const { atomicWriteProject } = require('./atomic-save.cjs');
+const { readFlags, sameFile, readRegularFile } = require('./project-io.cjs');
 
 const APP_URL = 'app://sound/';
 const APP_NAME = 'Sound Lab';
 const APP_ID = 'com.soundlab.app';
-const MAX_PROJECT_BYTES = 10 * 1024 * 1024;
+const MAX_WINDOW_BYTES = 4096;
+const MAX_LOG_BYTES = 128 * 1024;
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.txt': 'text/plain; charset=utf-8' };
 let mainWindow, calculationBusy = false, nativeBusy = 0, closePrompt = false;
 const downloads = new Set();
-let codec;
+const codec = import(pathToFileURL(path.join(__dirname, '..', 'src', 'project.js')).href);
 
 app.setName(APP_NAME);
 app.setAppUserModelId(APP_ID);
@@ -28,7 +31,18 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: {
 } }]);
 
 function log(message) {
-  try { fs.appendFileSync(path.join(app.getPath('userData'), 'desktop.log'), `${new Date().toISOString()} ${message}\n`); } catch { /* Logging is optional. */ }
+  const target = path.join(app.getPath('userData'), 'desktop.log');
+  let fd;
+  try {
+    const current = fs.lstatSync(target, { throwIfNoEntry: false });
+    if (current && (!current.isFile() || current.isSymbolicLink())) return;
+    fd = fs.openSync(target, readFlags | fs.constants.O_WRONLY | fs.constants.O_APPEND |
+      (current ? 0 : fs.constants.O_CREAT | fs.constants.O_EXCL), 0o600);
+    const opened = fs.fstatSync(fd);
+    const entry = `${new Date().toISOString()} ${message}\n`;
+    if (sameFile(opened, fs.lstatSync(target)) && opened.size + Buffer.byteLength(entry) <= MAX_LOG_BYTES) fs.writeSync(fd, entry);
+  } catch { /* Logging is optional. */ }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 function trustedURL(value) {
   try { const url = new URL(value); return url.protocol === 'app:' && url.host === 'sound' && !url.username && !url.password; }
@@ -46,23 +60,16 @@ function safeFileName(value) {
   if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) name = `sound-${name}`;
   return name || '소리 실험.sound.json';
 }
-function jsonText(contents) {
-  if (typeof contents !== 'string' || Buffer.byteLength(contents, 'utf8') > MAX_PROJECT_BYTES) {
-    throw new Error('실험 파일은 10 MiB 이하인 JSON 텍스트여야 합니다.');
-  }
-  try {
-    const parsed = JSON.parse(contents.charCodeAt(0) === 0xfeff ? contents.slice(1) : contents);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
-  } catch { throw new Error('JSON 실험 파일을 읽을 수 없습니다. 원본 파일은 변경하지 않습니다.'); }
-  return contents;
-}
-
-async function validatedText(contents) {
-  jsonText(contents);
-  codec ??= import(pathToFileURL(path.join(__dirname, '..', 'src', 'project.js')).href);
-  const { parseProject } = await codec;
-  parseProject(contents);
-  return contents;
+function decodeProject(input) {
+  // Legacy JSON may contain up to 10 MiB of whitespace. Parse away from the UI
+  // thread and return only the bounded, validated project fields.
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(path.join(__dirname, 'project-codec.cjs'));
+    worker.once('message', result => result.error ? reject(new Error(result.error)) : resolve(result));
+    worker.once('error', reject);
+    worker.once('exit', () => reject(new Error('실험 파일 검증을 완료하지 못했습니다.')));
+    worker.postMessage(input);
+  });
 }
 async function projectTarget(target, allowMissing = false) {
   if (typeof target !== 'string' || !path.isAbsolute(target)) throw new Error('실험 파일의 절대 경로를 확인해 주세요.');
@@ -72,7 +79,9 @@ async function projectTarget(target, allowMissing = false) {
   let stat;
   try { stat = await fsp.lstat(target); }
   catch (error) { if (allowMissing && error.code === 'ENOENT') return null; throw error; }
-  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('폴더나 연결 파일 대신 일반 JSON 파일을 선택해 주세요.');
+  if (stat.isSymbolicLink() || !stat.isFile() || normalized(await fsp.realpath(target)) !== normalized(target)) {
+    throw new Error('폴더나 연결 파일 대신 일반 JSON 파일을 선택해 주세요.');
+  }
   return stat;
 }
 
@@ -112,17 +121,11 @@ function registerFileActions() {
       const result = await dialog.showOpenDialog(mainWindow, { title: '소리 실험 열기',
         properties: ['openFile'], filters: [{ name: '소리 실험 JSON', extensions: ['json'] }] });
       if (result.canceled || !result.filePaths[0]) return { canceled: true };
-      const target = result.filePaths[0], stat = await projectTarget(target);
-      if (!stat.isFile() || stat.size > MAX_PROJECT_BYTES) throw new Error('실험 파일은 10 MiB 이하인 JSON 파일이어야 합니다.');
-      const handle = await fsp.open(target, 'r');
-      let bytes;
-      try {
-        const opened = await handle.stat();
-        if (!opened.isFile() || opened.size > MAX_PROJECT_BYTES || opened.dev !== stat.dev || opened.ino !== stat.ino) throw new Error('실험 파일이 변경되었습니다. 다시 선택해 주세요.');
-        bytes = await handle.readFile();
-      } finally { await handle.close(); }
-      if (bytes.byteLength > MAX_PROJECT_BYTES) throw new Error('실험 파일은 10 MiB 이하여야 합니다.');
-      return { canceled: false, content: await validatedText(bytes.toString('utf8')), path: target };
+      const { MAX_PROJECT_BYTES } = await codec;
+      const bytes = await readRegularFile(result.filePaths[0], projectTarget, MAX_PROJECT_BYTES,
+        () => new Error('실험 파일은 10 MiB 이하여야 합니다.'));
+      const { project } = await decodeProject(bytes);
+      return { canceled: false, project };
     } finally { nativeBusy--; }
   });
   ipcMain.handle('sound:save-project', async (event, payload) => {
@@ -131,7 +134,12 @@ function registerFileActions() {
     if (!payload || typeof payload !== 'object') throw new Error('실험 파일 내용을 확인해 주세요.');
     nativeBusy++;
     try {
-      const contents = await validatedText(payload.contents);
+      const { MAX_PROJECT_BYTES } = await codec;
+      if (typeof payload.contents !== 'string' || payload.contents.length > MAX_PROJECT_BYTES ||
+          Buffer.byteLength(payload.contents, 'utf8') > MAX_PROJECT_BYTES) {
+        throw new Error('실험 파일은 10 MiB 이하인 JSON 텍스트여야 합니다.');
+      }
+      const { contents } = await decodeProject(payload.contents);
       const result = await dialog.showSaveDialog(mainWindow, { title: '소리 실험 저장',
         defaultPath: path.join(app.getPath('documents'), safeFileName(payload.name)),
         filters: [{ name: '소리 실험 JSON', extensions: ['json'] }] });
@@ -206,18 +214,25 @@ function restoreWindowBounds(window, preferred) {
   }
 }
 
-function createWindow() {
+async function createWindow() {
   let saved = {};
-  try { const value = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'window.json'), 'utf8'));
+  const layoutPath = path.join(app.getPath('userData'), 'window.json');
+  try { const bytes = await readRegularFile(layoutPath, projectTarget, MAX_WINDOW_BYTES, () => new Error('Oversized window layout'));
+    const value = JSON.parse(bytes.toString('utf8'));
     if (value && typeof value === 'object' && !Array.isArray(value)) saved = value; } catch { /* First launch. */ }
   const preferredBounds = windowBounds(saved);
   mainWindow = new BrowserWindow({ ...preferredBounds, title: APP_NAME, show: false,
     backgroundColor: '#101820', icon: path.join(__dirname, '..', 'resources', 'app.ico'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true,
-      sandbox: true, nodeIntegration: false, webSecurity: true },
+      sandbox: true, nodeIntegration: false, webSecurity: true, webviewTag: false },
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  mainWindow.webContents.on('will-navigate', (event, url) => { if (!trustedURL(url)) event.preventDefault(); });
+  mainWindow.webContents.on('will-frame-navigate', event => {
+    if (!event.isMainFrame || !trustedURL(event.url)) event.preventDefault();
+  });
+  mainWindow.webContents.on('will-redirect', event => event.preventDefault());
+  mainWindow.webContents.on('will-attach-webview', event => event.preventDefault());
+  mainWindow.webContents.once('did-finish-load', () => log(`Loaded ${app.getVersion()}`));
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     calculationBusy = false; log(`Renderer ended: ${details.reason}`);
     dialog.showMessageBox(mainWindow, { type: 'error', title: APP_NAME, message: '화면을 계속 표시하지 못했습니다.',
@@ -235,7 +250,9 @@ function createWindow() {
     restoreWindowBounds(mainWindow, preferredBounds);
     if (saved.maximized === true) mainWindow.maximize();
   });
+  let layoutSaved = false, savingLayout = false;
   mainWindow.on('close', event => {
+    if (layoutSaved) return;
     if (calculationBusy || nativeBusy || downloads.size) {
       event.preventDefault(); if (closePrompt) return; closePrompt = true;
       dialog.showMessageBox(mainWindow, { type: 'warning', title: '작업 진행 중',
@@ -244,9 +261,14 @@ function createWindow() {
       }).then(({ response }) => { closePrompt = false; if (response === 1) app.exit(0); }).catch(() => { closePrompt = false; });
       return;
     }
-    try { fs.writeFileSync(path.join(app.getPath('userData'), 'window.json'), JSON.stringify({
-      ...mainWindow.getNormalBounds(), maximized: mainWindow.isMaximized(),
-    })); } catch { /* Window layout is optional. */ }
+    event.preventDefault();
+    if (savingLayout) return;
+    savingLayout = true;
+    const window = mainWindow;
+    atomicWriteProject(layoutPath, JSON.stringify({ ...window.getNormalBounds(), maximized: window.isMaximized() }),
+      { validateTarget: target => projectTarget(target, true) })
+      .catch(() => { /* Window layout is optional. */ })
+      .finally(() => { layoutSaved = true; if (!window.isDestroyed()) window.close(); });
   });
   mainWindow.on('closed', () => { mainWindow = null; });
   createMenu(); mainWindow.loadURL(APP_URL);
@@ -259,17 +281,22 @@ else {
   } });
   app.whenReady().then(async () => {
     protocol.handle('app', serveBundle);
-    session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] },
-      (_details, callback) => callback({ cancel: true }));
+    session.defaultSession.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, ({ url }, callback) => {
+      callback({ cancel: !trustedURL(url) && !trustedURL(url.startsWith('blob:') ? url.slice(5) : '') && !url.startsWith('data:') });
+    });
     session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     session.defaultSession.setPermissionCheckHandler(() => false);
     session.defaultSession.on('will-download', (_event, item, contents) => {
-      if (!mainWindow || contents !== mainWindow.webContents) { item.cancel(); return; }
+      const url = item.getURL();
+      const validType = (item.getFilename() === 'sound-lab-original.txt' && item.getMimeType().startsWith('text/plain')) ||
+        (/^sound-lab-\d{4}-\d{2}-\d{2}\.sound\.json$/.test(item.getFilename()) && item.getMimeType().startsWith('application/json'));
+      if (!mainWindow || contents !== mainWindow.webContents || !url.startsWith('blob:') ||
+          !trustedURL(url.slice(5)) || !validType) { item.cancel(); return; }
       downloads.add(item);
       item.setSaveDialogOptions({ title: '결과 파일 저장', defaultPath: path.join(app.getPath('documents'), safeFileName(item.getFilename())) });
       item.once('done', () => downloads.delete(item));
     });
-    registerFileActions(); createWindow(); log(`Started ${app.getVersion()}`);
+    registerFileActions(); await createWindow();
   }).catch(error => { log(`Startup failed: ${error.stack}`);
     dialog.showErrorBox(APP_NAME, `프로그램을 시작하지 못했습니다.\n${error.message}`); app.quit(); });
   app.on('window-all-closed', () => app.quit());

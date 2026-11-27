@@ -1,7 +1,7 @@
 import { archiveOriginal } from './recovery.js';
 import './style.css';
 import { AIR_TEMPERATURE_C, DEFAULT_CONFIG, normalizeConfig, getSnapshot, soundSpeedMps, wrapPhase, normalizeProbeRatio } from './model.js';
-import { createProject, parseProject, serializeProject, normalizeView, normalizeDisplayPeriodS, DEFAULT_VIEW, DISPLAY_PERIOD_S } from './project.js';
+import { createProject, parseProject, serializeProject, normalizeView, normalizeDisplayPeriodS, DEFAULT_VIEW, DISPLAY_PERIOD_S, MAX_PROJECT_BYTES } from './project.js';
 import { COMPONENTS } from './geometry.js';
 import { SoundScene } from './scene.js';
 import { WaveChart } from './chart.js';
@@ -135,7 +135,7 @@ function changeDisplayPeriod(value) {
 }
 function remember() { syncTime(); previous = { project: capture(), guide: copy(guide) }; $('#undo-new').hidden = false; }
 function readProject(project, restoredGuide = null) {
-  const saved = parseProject(serializeProject(project));
+  const saved = copy(project);
   pause(); tone.stop(); scene?.endInspection?.(); restoring = true;
   try {
     ({ experiment, comparison } = saved);
@@ -238,7 +238,7 @@ async function openFile() {
   if (busy) return; pause(); tone.stop();
   if (!desktop) { $('#project-file').click(); return; }
   setBusy(true);
-  try { const result = await desktop.openProject(); if (result.canceled) { toast('열기를 취소했습니다. 현재 실험은 유지합니다.'); return; } const saved = parseProject(result.content); remember(); readProject(saved); toast('저장한 소리 실험을 복원했습니다.'); }
+  try { const result = await desktop.openProject(); if (result.canceled) { toast('열기를 취소했습니다. 현재 실험은 유지합니다.'); return; } remember(); readProject(result.project); toast('저장한 소리 실험을 복원했습니다.'); }
   catch (error) { toast(`열지 못했습니다. ${error.message}`); } finally { setBusy(false); }
 }
 function toggleFocus() { document.body.classList.toggle('focus-mode'); text('#focus', document.body.classList.contains('focus-mode') ? '실험 화면으로' : '3D 크게 보기'); $('#scene').scrollIntoView({ block: 'nearest' }); }
@@ -280,7 +280,7 @@ $('#new-project').addEventListener('click', newExperiment);
 $('#undo-new').addEventListener('click', () => { if (!previous || busy) return; const saved = previous; previous = null; readProject(saved.project, saved.guide); if (guide) lessonsDisclosure.open = true; $('#undo-new').hidden = true; toast('직전 실험을 복원했습니다.'); });
 $('#save-project').addEventListener('click', saveFile); $('#open-project').addEventListener('click', openFile);
 $('#project-file').addEventListener('change', async event => { const file = event.target.files?.[0]; if (!file || busy) return; setBusy(true);
-  try { if (file.size > 10 * 1024 * 1024) throw new Error('실험 파일은 10 MiB 이하여야 합니다.'); const saved = parseProject(await file.text()); remember(); readProject(saved); toast('저장한 소리 실험을 복원했습니다.'); }
+  try { if (file.size > MAX_PROJECT_BYTES) throw new Error('실험 파일은 10 MiB 이하여야 합니다.'); const saved = parseProject(new Uint8Array(await file.slice(0, MAX_PROJECT_BYTES + 1).arrayBuffer())); remember(); readProject(saved); toast('저장한 소리 실험을 복원했습니다.'); }
   catch (error) { toast(`열지 못했습니다. ${error.message}`); } finally { event.target.value = ''; setBusy(false); }
 });
 $('#recover-original').addEventListener('click', () => { if (recoveredRaw !== null) { tone.stop(); browserDownload(recoveredRaw, 'sound-lab-original.txt', 'text/plain;charset=utf-8'); } });
@@ -289,13 +289,15 @@ desktop?.onCommand(command => { if (busy) return; const commands = { 'new-projec
 window.addEventListener('beforeunload', () => { syncTime(); saveLocal(); tone.dispose(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { pause(); tone.stop(); } });
 new ResizeObserver(drawChart).observe($('#wave-chart'));
-window.soundLab = { getState: () => copy({ experiment, snapshot, view, comparison, running, displayPeriodS }), project: () => { syncTime(); return copy(capture()); },
-  loadProject: raw => { const saved = parseProject(raw); remember(); readProject(saved); return copy(capture()); }, sceneDebug: () => scene?.getDebug() ?? null,
-  guide: () => copy(guide), chartDebug: () => copy(chart.debug), audioState: () => tone.getState(), setPhase, setProbe, getDetail: () => soundDetail(snapshot, { displayPeriodS }),
-  getInspection: () => scene?.getInspection?.() ?? null, beginInspection, endInspection };
-window.render_game_to_text = () => JSON.stringify({ mode: running ? 'running' : 'paused', coordinateSystem: `x along tube; positions in m, pressure/displacement/velocity independently normalized; visual cycle ${displayPeriodS} s`, displayPeriodS, snapshot, selectedPart: view.selectedPart, inspection: scene?.getInspection?.() ?? null, audio: tone.getState(), comparison: Boolean(comparison) });
-window.advanceTime = milliseconds => {
-  if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new RangeError('Expected nonnegative milliseconds');
-  if (!busy) { pause(); applyPhase(experiment.phaseRad + elapsedPhase(milliseconds)); }
-  return copy(snapshot);
-};
+if (__SOUND_LAB_DEBUG_TOOLS__) {
+  window.soundLab = { getState: () => copy({ experiment, snapshot, view, comparison, running, displayPeriodS }), project: () => { syncTime(); return copy(capture()); },
+    loadProject: raw => { const saved = parseProject(raw); remember(); readProject(saved); return copy(capture()); }, sceneDebug: () => scene?.getDebug() ?? null,
+    guide: () => copy(guide), chartDebug: () => copy(chart.debug), audioState: () => tone.getState(), setPhase, setProbe, getDetail: () => soundDetail(snapshot, { displayPeriodS }),
+    getInspection: () => scene?.getInspection?.() ?? null, beginInspection, endInspection };
+  window.render_game_to_text = () => JSON.stringify({ mode: running ? 'running' : 'paused', coordinateSystem: `x along tube; positions in m, pressure/displacement/velocity independently normalized; visual cycle ${displayPeriodS} s`, displayPeriodS, snapshot, selectedPart: view.selectedPart, inspection: scene?.getInspection?.() ?? null, audio: tone.getState(), comparison: Boolean(comparison) });
+  window.advanceTime = milliseconds => {
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new RangeError('Expected nonnegative milliseconds');
+    if (!busy) { pause(); applyPhase(experiment.phaseRad + elapsedPhase(milliseconds)); }
+    return copy(snapshot);
+  };
+}

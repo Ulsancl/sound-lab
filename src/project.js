@@ -4,7 +4,8 @@ import { DEFAULT_VIEW, COMPONENTS } from './geometry.js';
 export { DEFAULT_VIEW };
 export const projectType = 'sound-lab-project', projectVersion = 1, projectModelVersion = MODEL_VERSION;
 export const DISPLAY_PERIOD_S = Object.freeze({ min: .5, max: 8, default: 2 });
-const MAX_BYTES = 10 * 1024 * 1024, TAU = 2 * Math.PI;
+export const MAX_PROJECT_BYTES = 10 * 1024 * 1024;
+const TAU = 2 * Math.PI;
 const flags = ['cutaway', 'particles', 'pressure', 'exploded', 'labels'];
 const parts = new Set(COMPONENTS.map(part => part.id));
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -104,8 +105,14 @@ export function createProject(input = {}) {
   return { type: projectType, schemaVersion: projectVersion, modelVersion: MODEL_VERSION, experiment, comparison, observation };
 }
 export function parseProject(text) {
+  if (text instanceof Uint8Array) {
+    if (text.byteLength > MAX_PROJECT_BYTES) fail('실험 파일은 10 MiB 이하여야 합니다.', 'PROJECT_TOO_LARGE');
+    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(text); }
+    catch { fail('UTF-8 실험 파일을 읽을 수 없습니다.', 'INVALID_JSON'); }
+  } else if (typeof text === 'string' && (text.length > MAX_PROJECT_BYTES || new TextEncoder().encode(text).byteLength > MAX_PROJECT_BYTES)) {
+    fail('실험 파일은 10 MiB 이하여야 합니다.', 'PROJECT_TOO_LARGE');
+  }
   if (typeof text !== 'string') fail('실험 파일은 JSON 텍스트여야 합니다.', 'INVALID_JSON');
-  if (text.length > MAX_BYTES || new TextEncoder().encode(text).byteLength > MAX_BYTES) fail('실험 파일은 10 MiB 이하여야 합니다.', 'PROJECT_TOO_LARGE');
   let value; try { value = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text); } catch { fail('JSON 실험 파일을 읽을 수 없습니다.', 'INVALID_JSON'); }
   return validateProject(value);
 }

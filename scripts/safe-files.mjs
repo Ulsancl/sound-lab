@@ -1,5 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { powershellPath, powershellArgs } from '../desktop/windows-powershell.cjs';
 
 function inside(root, file) {
   const relative = path.relative(root, file);
@@ -15,7 +18,8 @@ export function checkedPath(root, file) {
     if (component) current = path.join(current, component);
     const info = fs.lstatSync(current);
     if (info.isSymbolicLink() || (!info.isDirectory() && !info.isFile())) throw new Error('Symlinks and special files are not allowed: ' + current);
-    if (fs.realpathSync(current) !== current) throw new Error('Non-canonical input path: ' + current);
+    const real = fs.realpathSync(current);
+    if (path.relative(real, current) !== '') throw new Error('Non-canonical input path: ' + current);
   }
   return file;
 }
@@ -53,17 +57,28 @@ export function secureDirectory(root, directory) {
 
 export function stagingDirectory(root) {
   secureDirectory(root, root);
-  return fs.mkdtempSync(path.join(root, '.security-stage-'));
+  return privateStage(root);
+}
+
+function privateStage(parent) {
+  if (process.platform !== 'win32') return fs.mkdtempSync(path.join(parent, '.security-stage-'));
+  const directory = path.join(parent, '.security-stage-' + randomUUID());
+  const script = fs.readFileSync(new URL('./private-directory.ps1', import.meta.url), 'utf8');
+  const result = spawnSync(powershellPath(), powershellArgs(script), { input: directory, encoding: 'utf8', windowsHide: true });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error('Could not create a private Windows staging directory: ' + result.stderr.trim());
+  return directory;
 }
 
 export function writeArtifact(root, file, data) {
   const parent = secureDirectory(root, path.dirname(file));
-  if (fs.existsSync(file) || fs.lstatSync(file, { throwIfNoEntry: false })) checkedPath(root, file);
-  const stage = fs.mkdtempSync(path.join(parent, '.security-write-'));
+  if (fs.lstatSync(file, { throwIfNoEntry: false })) checkedPath(root, file);
+  const stage = privateStage(parent);
   try {
     const temporary = path.join(stage, 'artifact');
     fs.writeFileSync(temporary, data, { flag: 'wx', mode: 0o600 });
     secureDirectory(root, parent);
+    if (fs.lstatSync(file, { throwIfNoEntry: false })) checkedPath(root, file);
     fs.renameSync(temporary, file);
   } finally { fs.rmSync(stage, { recursive: true, force: true }); }
 }
@@ -75,14 +90,17 @@ export function copyInput(root, source, target) {
     for (const name of fs.readdirSync(source)) copyInput(root, path.join(source, name), path.join(target, name));
   } else {
     fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(target, readInput(root, source), { flag: 'wx', mode: fs.statSync(source).mode & 0o777 });
+    fs.writeFileSync(target, readInput(root, source), { flag: 'wx', mode: 0o600 });
   }
 }
 
 export function publishDirectory(root, source, target) {
+  checkTree(root, source);
+  if (!fs.lstatSync(source).isDirectory()) throw new Error('Staged output must be a directory');
   secureDirectory(root, path.dirname(target));
   if (fs.lstatSync(target, { throwIfNoEntry: false })) {
     checkTree(root, target);
+    if (!fs.lstatSync(target).isDirectory()) throw new Error('Existing output must be a directory');
     // Keep the previous generated result until the new one is published.
     const backup = path.join(path.dirname(source), 'previous');
     fs.renameSync(target, backup);
@@ -97,6 +115,9 @@ export function artifactDirectory(root, destination) {
   if (fs.lstatSync(destination, { throwIfNoEntry: false })) checkTree(root, destination);
   const stage = stagingDirectory(root), output = path.join(stage, 'artifacts');
   fs.mkdirSync(output, { mode: 0o700 });
-  process.once('exit', () => { publishDirectory(root, output, destination); fs.rmdirSync(stage); });
+  process.once('exit', () => {
+    try { publishDirectory(root, output, destination); }
+    finally { fs.rmSync(stage, { recursive: true, force: true }); }
+  });
   return output;
 }
