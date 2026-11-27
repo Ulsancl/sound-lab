@@ -1,4 +1,7 @@
-const artifacts = ['**/.security-stage-*', '**/.security-stage-*/**', '**/output/**', '**/release/**', '**/dist/**'];
+import { fileURLToPath } from 'node:url';
+
+const root = fileURLToPath(new URL('.', import.meta.url)).replaceAll('\\', '/').replace(/[()[\]{}*?!+]/g, '\\$&');
+const artifacts = ['.security-stage-*', '.security-stage-*/**', 'output/**', 'release/**', 'dist/**'];
 export default ({ command }) => ({
   base: './',
   plugins: command === 'serve' ? [{
@@ -7,7 +10,10 @@ export default ({ command }) => ({
   }] : [],
   server: {
     host: '127.0.0.1', port: 5240, strictPort: true,
-    watch: { ignored: artifacts },
-    fs: { deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', ...artifacts] },
+    watch: { ignored: artifacts.map(pattern => `**/${pattern}`) },
+    // Scope artifact rules to this checkout. Vite itself serves a client module
+    // from node_modules/vite/dist, which must remain available in development.
+    fs: { deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**',
+      ...artifacts.map(pattern => root + pattern)] },
   },
 });

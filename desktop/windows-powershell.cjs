@@ -7,7 +7,10 @@ function powershellPath() {
 }
 
 function powershellArgs(script) {
-  return ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
+  // Hosted jobs use PowerShell 7 and may pass module paths that 5.1 cannot load.
+  // System helpers only require the built-in 5.1 modules.
+  const command = "$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules');\n" + script;
+  return ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')];
 }
 
 module.exports = { powershellPath, powershellArgs };

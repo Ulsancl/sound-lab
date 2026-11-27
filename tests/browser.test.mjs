@@ -51,6 +51,20 @@ async function hidden(target = page) {
 }
 
 try {
+  await check('Vite serves its client and refuses access to staged test artifacts', async () => {
+    const client = await fetch(new URL('/@vite/client', baseURL));
+    assert.equal(client.status, 200);
+    assert.match(client.headers.get('content-type'), /javascript/);
+    await client.text();
+    const fixture = path.join(output, 'private-fixture.txt');
+    await fs.writeFile(fixture, 'diagnostic fixture', { flag: 'wx' });
+    try {
+      const url = path.relative(root, fixture).split(path.sep).map(encodeURIComponent).join('/');
+      const response = await fetch(new URL(url, baseURL));
+      assert.equal(response.status, 403);
+      await response.text();
+    } finally { await fs.unlink(fixture); }
+  });
   browser = await chromium.launch({ headless: true, ...(hardware ? { args: ['--enable-gpu', '--use-angle=d3d11', '--ignore-gpu-blocklist'] } : {}) });
   context = await browser.newContext({ viewport: { width: 1600, height: 1000 }, acceptDownloads: true });
   page = await context.newPage(); page.setDefaultTimeout(20000); watch(page);
@@ -317,21 +331,50 @@ try {
 
   await check('explicit tone playback stays independent of probe and slow phase, and stops on config, file and hidden actions', async () => {
     await length(.5); await select('boundary', 'open-open'); await select('mode', 1);
-    async function listenAt(frequencyHz) {
+    async function listenAt(frequencyHz, action) {
+      // Record the actual UI action at playback start. Software-rendered CI
+      // can spend the full two seconds between separate browser round trips.
+      await page.evaluate(action => {
+        window.soundAudioObservation = null;
+        const observer = new MutationObserver(() => {
+          const before = window.soundLab.audioState();
+          if (!before.playing) return;
+          observer.disconnect();
+          let during;
+          if (action === 'observation-and-config') {
+            document.querySelector('[data-probe="100"]').click();
+            document.querySelector('[data-phase="90"]').click();
+            during = window.soundLab.audioState();
+            const mode = document.querySelector('#mode');
+            mode.value = '2';
+            mode.dispatchEvent(new Event('change', { bubbles: true }));
+          } else if (action === 'hide') {
+            document.querySelector('#play').click();
+            Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+            document.dispatchEvent(new Event('visibilitychange'));
+            delete document.hidden;
+          } else if (action === 'save') {
+            document.querySelector('#save-project').click();
+          }
+          window.soundAudioObservation = { before, during, after: window.soundLab.audioState() };
+        });
+        observer.observe(document.querySelector('#audio-status'), { childList: true });
+      }, action);
       await page.locator('#listen').click();
-      const observation = await page.waitForFunction(() => {
-        const sample = window.soundLab.audioState();
-        return sample.playing ? sample : null;
-      });
-      try { near((await observation.jsonValue()).frequencyHz, frequencyHz); }
-      finally { await observation.dispose(); }
+      await page.waitForFunction(() => window.soundAudioObservation !== null);
+      const observation = await page.evaluate(() => window.soundAudioObservation);
+      near(observation.before.frequencyHz, frequencyHz);
+      return observation;
     }
-    await listenAt(343);
-    await probe(100); await phase(90); near((await audio()).frequencyHz, 343); assert.equal((await audio()).playing, true);
-    await select('mode', 2); assert.equal((await audio()).playing, false); await listenAt(686);
-    await page.locator('#play').click(); await hidden(); assert.equal((await audio()).playing, false); assert.equal((await state()).running, false);
-    await page.locator('#listen').click(); await page.waitForFunction(() => window.soundLab.audioState().playing); const pending = page.waitForEvent('download'); await page.locator('#save-project').click(); await pending; assert.equal((await audio()).playing, false);
-    await page.locator('#listen').click(); await page.waitForFunction(() => window.soundLab.audioState().playing); await page.waitForFunction(() => !window.soundLab.audioState().playing, undefined, { timeout: 5000 });
+    const changed = await listenAt(343, 'observation-and-config');
+    near(changed.during.frequencyHz, 343); assert.equal(changed.during.playing, true);
+    assert.equal(changed.after.playing, false);
+    assert.equal((await listenAt(686, 'hide')).after.playing, false);
+    assert.equal((await state()).running, false);
+    const [saved] = await Promise.all([listenAt(686, 'save'), page.waitForEvent('download')]);
+    assert.equal(saved.after.playing, false);
+    await listenAt(686);
+    await page.waitForFunction(() => !window.soundLab.audioState().playing, undefined, { timeout: 5000 });
     assert.equal((await audio()).error, null);
   });
 

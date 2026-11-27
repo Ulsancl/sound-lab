@@ -9,7 +9,8 @@ $ErrorActionPreference = 'Stop'
 $installables = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd())
 foreach ($file in $installables) {
     $signature = Get-AuthenticodeSignature -LiteralPath $file
-    if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate -or !$signature.TimeStamperCertificate) {
+    if ($signature.Status -ne 'Valid' -or $signature.SignatureType -ne 'Authenticode' -or
+        !$signature.SignerCertificate -or !$signature.TimeStamperCertificate) {
         throw "A valid timestamped Authenticode signature is required: $($signature.Status)"
     }
     if ($env:SOUND_RELEASE_SIGNER_THUMBPRINT -notmatch '\\A[0-9a-fA-F]{40}\\z' -or
