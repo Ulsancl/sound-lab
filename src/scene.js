@@ -14,6 +14,7 @@ const TAU = Math.PI * 2;
 const MARKER_COUNT = 33;
 const TRACER_OFFSETS = [[-.006, -.008], [0, 0], [.006, .008]];
 const FIELD_COLORS = { pressure: '#88d9f4', displacement: '#ffc17a', particle: '#fff3d6' };
+const STAGE_COLOR = '#202e36';
 
 export class SoundScene {
   constructor(container, { onSelect = () => {}, onCameraChange = () => {} } = {}) {
@@ -29,7 +30,7 @@ export class SoundScene {
     this.renderer.domElement.setAttribute('aria-label', '속이 빈 관과 끝마개, 가상 탐침, 종방향 공기 운동의 3D 실험대');
     this.renderer.domElement.setAttribute('aria-description', '방향키로 시점 이동, Shift와 방향키로 회전');
     this.renderer.domElement.tabIndex = 0; container.append(this.renderer.domElement);
-    this.scene = new THREE.Scene(); this.scene.background = new THREE.Color('#202e36'); this.scene.fog = new THREE.FogExp2('#202e36', .27);
+    this.scene = new THREE.Scene(); this.scene.background = new THREE.Color(STAGE_COLOR); this.scene.fog = new THREE.Fog(this.scene.background, 1.6, 7);
     this.camera = new THREE.PerspectiveCamera(35, 1, .002, 40);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement); this.controls.enableDamping = false;
     this.controls.listenToKeyEvents(this.renderer.domElement);
@@ -46,7 +47,7 @@ export class SoundScene {
     const rim = new THREE.DirectionalLight('#a4d6ff', 2.7); rim.position.set(.8, .6, -1.2); this.scene.add(rim);
     this.root = new THREE.Group(); this.scene.add(this.root);
     this.makeMaterials(); for (const part of COMPONENTS) this.part(part.id);
-    this.buildBench(); this.buildTube(); this.buildSupports(); this.buildCap(); this.buildProbe(); this.buildReadout(); this.buildField(); this.buildOverlay();
+    this.buildStage(); this.buildBench(); this.buildTube(); this.buildSupports(); this.buildCap(); this.buildProbe(); this.buildReadout(); this.buildField(); this.buildOverlay();
     this.applyLayout(this.layout); this.identifyMeshes(); this.buildPointer();
     this.resizeObserver = new ResizeObserver(() => this.resize()); this.resizeObserver.observe(container); this.resize();
     this.updating = false; this.resetCamera();
@@ -114,6 +115,29 @@ export class SoundScene {
     const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = colorSpace; this.textures.add(texture);
     return { canvas, context: canvas.getContext('2d'), texture };
   }
+  buildStage() {
+    this.ground = new THREE.Group(); this.scene.add(this.ground);
+    const floor = this.canvasTexture(512, 512);
+    const falloff = floor.context.createRadialGradient(256, 256, 0, 256, 256, 35);
+    falloff.addColorStop(0, '#283b45');
+    falloff.addColorStop(.45, '#21333d');
+    falloff.addColorStop(1, '#16262f');
+    floor.context.fillStyle = falloff; floor.context.fillRect(0, 0, 512, 512);
+    const plane = this.mesh(new THREE.PlaneGeometry(40, 30), this.material({ map: floor.texture, roughness: .94, metalness: .02 }), this.ground, [0, -.001, 0], false);
+    plane.rotation.x = -Math.PI / 2;
+    plane.castShadow = false;
+
+    const shadow = this.canvasTexture(128, 128);
+    const penumbra = shadow.context.createRadialGradient(64, 64, 0, 64, 64, 64);
+    penumbra.addColorStop(0, 'rgba(10, 21, 27, .50)');
+    penumbra.addColorStop(.58, 'rgba(10, 21, 27, .32)');
+    penumbra.addColorStop(1, 'rgba(10, 21, 27, 0)');
+    shadow.context.fillStyle = penumbra; shadow.context.fillRect(0, 0, 128, 128);
+    const material = new THREE.MeshBasicMaterial({ map: shadow.texture, transparent: true, depthWrite: false, toneMapped: false });
+    this.contactShadow = this.mesh(new THREE.PlaneGeometry(1, 1), material, this.ground, [0, -.0008, G.bench.center[2]], false);
+    this.contactShadow.rotation.x = -Math.PI / 2;
+    this.contactShadow.castShadow = this.contactShadow.receiveShadow = false;
+  }
   buildBench() {
     const bench = this.node('bench-base');
     this.bench = this.box([1, G.bench.size[1], G.bench.size[2]], this.mat.base, bench, G.bench.center, .005);
@@ -146,7 +170,6 @@ export class SoundScene {
     this.scaleFace.castShadow = false;
     this.scaleMounts = [-1, 1].map(() => this.box([.011, .014, .015], this.mat.dark, scale, [0, .076, .091], .001));
     this.anchor('scale', [0, .086, .10]);
-    const ground = this.mesh(new THREE.PlaneGeometry(40, 30), this.material({ color: '#283942', roughness: .94, metalness: .02 }), this.scene, [0, -.001, 0]); ground.rotation.x = -Math.PI / 2; ground.castShadow = false; this.ground = ground;
   }
   buildTube() {
     const node = this.node('tube-wall'); this.tubeFull = this.mesh(this.surface(hollowTubeMesh(1, false)), this.mat.glass, node);
@@ -276,6 +299,7 @@ export class SoundScene {
   }
   applyLayout(layout) {
     this.layout = layout; this.bench.scale.x = layout.benchLengthM;
+    this.contactShadow.scale.set(layout.benchLengthM + .24, G.bench.size[2] + .24, 1);
     for (const trim of this.benchTrim) trim.scale.x = layout.benchLengthM;
     for (const foot of this.feet) foot.position.x = foot.userData.side * (layout.benchLengthM / 2 - .038);
     for (const rail of [...this.rails, this.guideRail]) rail.scale.y = layout.railLengthM;
@@ -436,7 +460,7 @@ export class SoundScene {
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.classList.add('sound-leader'); line.append(path);
       const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle'); dot.setAttribute('r', '3'); line.append(dot); this.labels.set(part.id, { button, line, halo, path, dot });
     }
-    const footer = document.createElement('div'); footer.className = 'sound-scene-footer'; this.overlay.append(footer);
+    const footer = document.createElement('div'); footer.className = 'sound-scene-footer'; this.container.after(footer); this.footer = footer;
     this.note = document.createElement('div'); this.note.className = 'sound-scene-note'; footer.append(this.note);
     this.noteText = document.createElement('span'); this.note.append(this.noteText);
     const legend = (name, text) => {
@@ -454,8 +478,9 @@ export class SoundScene {
       label.button.classList.toggle('is-selected', selected);
       label.button.setAttribute('aria-pressed', String(selected));
     }
+    const compact = this.width <= 520;
     const ids = this.view.labels && this.height >= 180
-      ? [...new Set([this.view.selectedPart, ...(this.focusContext || ['tube-wall', 'end-cap', 'probe-tip', 'readout'])])].slice(0, this.width < 480 ? 3 : 5)
+      ? [...new Set([this.view.selectedPart, ...(this.focusContext || ['tube-wall', 'end-cap', 'probe-tip', 'readout'])])].slice(0, compact ? 1 : 5)
       : [];
     const points = [], shown = new Set();
     for (const id of ids) {
@@ -463,7 +488,10 @@ export class SoundScene {
       const part = this.components.get(id); if (!part || !this.actuallyVisible(part.node)) continue; const p = part.node.localToWorld(part.anchor.clone()).project(this.camera);
       if (Math.abs(p.x) > 1 || Math.abs(p.y) > 1 || p.z < -1 || p.z > 1) continue; points.push({ id, x: (p.x + 1) * this.width / 2, y: (1 - p.y) * this.height / 2 });
     }
-    const width = this.width < 620 ? Math.min(130, this.width * .35) : 158, height = 32, placed = [];
+    const width = compact ? Math.min(112, this.width * .38) : this.width < 620 ? 130 : 158;
+    const height = compact ? 28 : 32, placed = [];
+    const top = compact ? 10 : 36;
+    const bottom = Math.max(top, this.height - (compact ? 38 : this.width < 620 ? 122 : 88));
     for (const p of points) {
       const candidates = [];
       if (this.inspection) {
@@ -471,7 +499,7 @@ export class SoundScene {
         candidates.push({ box, end, score: -1e9 });
       }
       for (const dy of [-60, -99, 39, 78, -138, 117]) for (const dx of [0, -width * .7, width * .7, -width, width]) {
-        const box = { x: clamp(p.x - width / 2 + dx, 9, this.width - width - 9), y: clamp(p.y + dy, 36, Math.max(36, this.height - (this.width < 620 ? 122 : 88))), w: width, h: height };
+        const box = { x: clamp(p.x - width / 2 + dx, 9, this.width - width - 9), y: clamp(p.y + dy, top, bottom), w: width, h: height };
         if (placed.some(b => box.x < b.x + b.w + 7 && box.x + box.w + 7 > b.x && box.y < b.y + b.h + 7 && box.y + box.h + 7 > b.y)) continue;
         const end = { x: clamp(p.x, box.x + 6, box.x + width - 6), y: clamp(p.y, box.y, box.y + height) };
         const covered = points.filter(q => q.x > box.x - 7 && q.x < box.x + width + 7 && q.y > box.y - 7 && q.y < box.y + height + 7).length;
@@ -588,6 +616,6 @@ export class SoundScene {
   dispose() {
     if (this.disposed) return; this.disposed = true; this.resizeObserver.disconnect(); this.controls.removeEventListener('change', this.controlsChanged); this.controls.dispose();
     for (const [type, listener] of [['pointerdown', this.pointerDown], ['pointerup', this.pointerUp], ['pointercancel', this.pointerCancel]]) this.renderer.domElement.removeEventListener(type, listener);
-    this.particleMesh.dispose(); this.displacementMesh.dispose(); for (const geometry of this.geometries) geometry.dispose(); for (const material of this.materials) material.dispose(); for (const texture of this.textures) texture.dispose(); this.environment.dispose(); this.renderer.dispose(); this.overlay.remove(); this.renderer.domElement.remove(); this.container.classList.remove('sound-scene');
+    this.particleMesh.dispose(); this.displacementMesh.dispose(); for (const geometry of this.geometries) geometry.dispose(); for (const material of this.materials) material.dispose(); for (const texture of this.textures) texture.dispose(); this.environment.dispose(); this.renderer.dispose(); this.overlay.remove(); this.footer.remove(); this.renderer.domElement.remove(); this.container.classList.remove('sound-scene');
   }
 }

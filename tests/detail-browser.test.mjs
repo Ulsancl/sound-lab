@@ -246,6 +246,7 @@ try {
   });
   await check('390-pixel layout and focus mode keep detail values and inspection exit reachable without overflow', async () => {
     await load(fixture()); await page.setViewportSize({ width: 390, height: 844 }); await paint(); await parity();
+    await page.locator('#parts-disclosure > summary').click();
     await select('part-select', 'probe-carriage'); await factParity('probe-carriage'); await page.locator('#inspect-part').click();
     await page.locator('#focus').click(); assert.equal(await page.locator('#sound-details').isVisible(), false);
     assert.equal(await page.locator('#end-inspection').isVisible(), true); await page.locator('#end-inspection').click(); assert.equal(await inspection(), null);

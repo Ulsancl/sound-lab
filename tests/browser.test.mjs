@@ -177,6 +177,78 @@ try {
     }
   });
 
+  await check('500-pixel touch layout keeps file actions and collapsed secondary controls reachable', async () => {
+    const mobile = await browser.newPage({ viewport: { width: 500, height: 850 }, hasTouch: true, acceptDownloads: true });
+    watch(mobile);
+    try {
+      await mobile.goto(baseURL);
+      await mobile.waitForFunction(() => window.soundLab?.sceneDebug()?.ready);
+      const nav = mobile.getByRole('navigation', { name: '실험 파일' });
+      const start = nav.getByRole('button', { name: '새 실험', exact: true });
+      const open = nav.getByRole('button', { name: '열기', exact: true });
+      const save = nav.getByRole('button', { name: '저장', exact: true });
+      const help = nav.getByRole('button', { name: '도움말', exact: true });
+      const parts = mobile.locator('#parts-disclosure > summary');
+      const lessons = mobile.locator('#lessons-disclosure > summary');
+      const partSelect = mobile.getByRole('combobox', { name: '부품 선택' });
+      const lesson = mobile.locator('[data-lesson="length"]');
+      assert.equal(await partSelect.isVisible(), false);
+      assert.equal(await lesson.isVisible(), false);
+      assert.ok((await mobile.locator('.topbar').boundingBox()).height < 75);
+      for (const button of [start, open, save, help]) {
+        const { width, height } = await button.boundingBox();
+        assert.ok(width >= 44 && height >= 44);
+      }
+      assert.equal(await mobile.locator('.sound-part-label:visible').count(), 1);
+      const stage = await mobile.locator('#scene').boundingBox();
+      const legend = await mobile.locator('.sound-scene-footer').boundingBox();
+      assert.ok(legend.y >= stage.y + stage.height);
+      assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth), 500);
+
+      await start.focus();
+      for (const button of [open, save, help]) {
+        await mobile.keyboard.press('Tab');
+        assert.equal(await button.evaluate(element => element === document.activeElement), true);
+      }
+      await mobile.keyboard.press('Enter');
+      assert.equal(await mobile.getByRole('dialog').isVisible(), true);
+      await mobile.keyboard.press('Escape');
+      assert.equal(await help.evaluate(element => element === document.activeElement), true);
+
+      await mobile.locator('#boundary').selectOption('closed-open');
+      const saved = await mobile.evaluate(() => window.soundLab.project());
+      const pendingDownload = mobile.waitForEvent('download');
+      await save.tap();
+      const download = await pendingDownload;
+      assert.deepEqual(JSON.parse(await fs.readFile(await download.path(), 'utf8')), saved);
+      await start.tap();
+      assert.equal(await mobile.evaluate(() => window.soundLab.project().experiment.config.boundary), 'open-open');
+      const pendingChooser = mobile.waitForEvent('filechooser');
+      await open.tap();
+      await (await pendingChooser).setFiles({ name: 'mobile.sound.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(saved)) });
+      await mobile.waitForFunction(expected => JSON.stringify(window.soundLab.project()) === JSON.stringify(expected), saved);
+      await mobile.locator('#toast button').tap();
+
+      await parts.press('Space');
+      assert.equal(await partSelect.isVisible(), true);
+      await partSelect.selectOption('end-cap');
+      assert.match(await parts.textContent(), /탈착 끝마개/);
+      await parts.tap();
+      assert.equal(await partSelect.isVisible(), false);
+      await lessons.tap();
+      await lesson.tap();
+      assert.equal(await mobile.locator('#guide-next').isVisible(), true);
+      await lessons.tap();
+      assert.equal(await mobile.locator('#guide-next').isVisible(), false);
+      assert.match(await lessons.textContent(), /길이를 두 배로 늘리면/);
+      await mobile.setViewportSize({ width: 1440, height: 950 });
+      await mobile.waitForFunction(() => document.querySelector('#parts-disclosure').open);
+      assert.equal(await partSelect.isVisible(), true);
+      assert.equal(await mobile.locator('#guide-next').isVisible(), true);
+      assert.equal(await nav.getByRole('button', { name: '파일로 보관', exact: true }).isVisible(), true);
+    } finally { await mobile.close(); }
+  });
+
   await check('without WebGL, open and undo preserve the file camera but a new experiment clears it', async () => {
     const fallback = await browser.newPage();
     try {
@@ -258,6 +330,10 @@ try {
     await dismissToast();
     for (const [width, height] of [[1600,1000],[1024,768],[390,844]]) {
       await page.setViewportSize({ width, height }); await paint(); assert.ok(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth) <= 1, `horizontal overflow at ${width}`);
+      for (const selector of ['#parts-disclosure', '#lessons-disclosure']) {
+        const disclosure = page.locator(selector);
+        if (!(await disclosure.evaluate(element => element.open))) await disclosure.locator('summary').click();
+      }
       for (const id of ['length','length-number','boundary','mode','play','phase','listen','probe','part-select','focus-part','save-project','open-project','help']) {
         const control = page.locator(`#${id}`); await control.scrollIntoViewIfNeeded(); assert.equal(await control.isVisible(), true, `${id} at ${width}`);
         const box = await control.boundingBox(); assert.ok(box.width > 0 && box.x >= -1 && box.x + box.width <= width + 1, `${id} clipped at ${width}`);

@@ -1,7 +1,11 @@
+.scene-stage {
+  position: relative;
+  container-type: inline-size;
+}
+
 .sound-scene {
   position: relative;
   isolation: isolate;
-  container-type: inline-size;
   overflow: hidden;
   touch-action: none;
 }
@@ -51,7 +55,7 @@
   border-radius: 5px;
   background: #182831f5;
   color: #e4edf0;
-  font: 500 12px/1.35 "Segoe UI", "Malgun Gothic", sans-serif;
+  font: 500 12px/1.35 var(--ui-font);
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -73,6 +77,7 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 8px;
+  pointer-events: none;
 }
 
 .sound-scene-note,
@@ -82,7 +87,7 @@
   border-radius: 5px;
   background: #182831f5;
   color: #e2ecef;
-  font: 500 11px/1.45 "Segoe UI", "Malgun Gothic", sans-serif;
+  font: 500 11px/1.45 var(--ui-font);
 }
 
 .sound-scene-note {
@@ -131,4 +136,33 @@
   .sound-scene-footer { right: 8px; bottom: 8px; left: 8px; align-items: stretch; flex-direction: column; gap: 4px; }
   .sound-scene-note { justify-content: center; }
   .sound-probe-readout { text-align: center; }
+}
+
+@container (max-width: 520px) {
+  .sound-part-label {
+    height: 28px;
+    min-height: 28px;
+    padding: 4px 7px;
+  }
+
+  .sound-scene-footer {
+    position: static;
+    align-items: baseline;
+    flex-direction: row;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 3px 12px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sound-scene-note,
+  .sound-probe-readout {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-size: 10px;
+  }
+
+  .sound-scene-note { justify-content: flex-start; gap: 3px 9px; }
 }
