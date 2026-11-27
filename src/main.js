@@ -282,7 +282,7 @@ window.soundLab = { getState: () => copy({ experiment, snapshot, view, compariso
   loadProject: raw => { const saved = parseProject(raw); remember(); readProject(saved); return copy(capture()); }, sceneDebug: () => scene?.getDebug() ?? null,
   guide: () => copy(guide), chartDebug: () => copy(chart.debug), audioState: () => tone.getState(), setPhase, setProbe, getDetail: () => soundDetail(snapshot, { displayPeriodS }),
   getInspection: () => scene?.getInspection?.() ?? null, beginInspection, endInspection };
-window.render_game_to_text = () => JSON.stringify({ mode: running ? 'running' : 'paused', coordinateSystem: 'x along tube; positions in m, pressure/displacement/velocity independently normalized', displayPeriodS, snapshot, selectedPart: view.selectedPart, inspection: scene?.getInspection?.() ?? null, audio: tone.getState(), comparison: Boolean(comparison) });
+window.render_game_to_text = () => JSON.stringify({ mode: running ? 'running' : 'paused', coordinateSystem: `x along tube; positions in m, pressure/displacement/velocity independently normalized; visual cycle ${displayPeriodS} s`, displayPeriodS, snapshot, selectedPart: view.selectedPart, inspection: scene?.getInspection?.() ?? null, audio: tone.getState(), comparison: Boolean(comparison) });
 window.advanceTime = milliseconds => {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new RangeError('Expected nonnegative milliseconds');
   if (!busy) { pause(); applyPhase(experiment.phaseRad + elapsedPhase(milliseconds)); }
