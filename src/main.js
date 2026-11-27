@@ -289,7 +289,7 @@ desktop?.onCommand(command => { if (busy) return; const commands = { 'new-projec
 window.addEventListener('beforeunload', () => { syncTime(); saveLocal(); tone.dispose(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { pause(); tone.stop(); } });
 new ResizeObserver(drawChart).observe($('#wave-chart'));
-if (import.meta.env.DEV || import.meta.env.MODE === 'desktop-test') {
+if (__SOUND_LAB_DEBUG_TOOLS__) {
   window.soundLab = { getState: () => copy({ experiment, snapshot, view, comparison, running, displayPeriodS }), project: () => { syncTime(); return copy(capture()); },
     loadProject: raw => { const saved = parseProject(raw); remember(); readProject(saved); return copy(capture()); }, sceneDebug: () => scene?.getDebug() ?? null,
     guide: () => copy(guide), chartDebug: () => copy(chart.debug), audioState: () => tone.getState(), setPhase, setProbe, getDetail: () => soundDetail(snapshot, { displayPeriodS }),
