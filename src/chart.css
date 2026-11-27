@@ -1,0 +1,173 @@
+#wave-chart {
+  height: auto;
+  margin: 0 16px;
+}
+
+#wave-chart > svg,
+#frequency-chart > svg {
+  height: auto;
+}
+
+.chart-velocity-key {
+  color: #b9c6ff;
+}
+
+.wave-row-title {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.wave-grid {
+  stroke: #314751;
+}
+
+.wave-zero {
+  stroke: #617d89;
+}
+
+.wave-tick,
+.wave-axis-title,
+.wave-frequency-value {
+  fill: #aac4cf;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.wave-frequency-value {
+  fill: #e2edf2;
+  font-weight: 600;
+}
+
+.wave-envelope,
+.wave-trace,
+.wave-saved-underlay {
+  fill: none;
+}
+
+.wave-envelope {
+  stroke-width: 1.2;
+  stroke-dasharray: 2 4;
+  opacity: .68;
+}
+
+.wave-envelope-saved {
+  stroke-dasharray: 5 3 1 3;
+}
+
+.wave-trace {
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+.wave-trace-saved,
+.wave-saved-underlay {
+  stroke-dasharray: 7 5;
+}
+
+.wave-trace-saved {
+  stroke-width: 2;
+}
+
+.wave-saved-underlay {
+  stroke: #10212a;
+  stroke-width: 4.5;
+}
+
+.wave-node {
+  fill: var(--panel);
+  stroke-width: 1.7;
+}
+
+.wave-probe {
+  stroke: var(--panel);
+  stroke-width: 1.1;
+}
+
+.wave-probe-guide {
+  stroke: #b3d1d9;
+  stroke-dasharray: 3 4;
+  opacity: .7;
+}
+
+.wave-node-summary {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #14262e;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.wave-node-summary h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.wave-node-summary p {
+  margin: 3px 0 9px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wave-node-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 205px) minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 12px;
+  padding: 6px 0;
+  color: var(--cyan);
+}
+
+.wave-node-row + .wave-node-row {
+  border-top: 1px solid var(--border);
+}
+
+.wave-node-row[data-condition="saved"] {
+  color: #e49ccd;
+}
+
+.wave-node-row ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.wave-node-row li {
+  display: grid;
+  gap: 2px;
+  min-width: 54px;
+  padding: 4px 5px;
+  border-radius: 4px;
+  background: #203741;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.wave-node-row li span + span {
+  color: #c1d3da;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+#frequency-chart {
+  height: auto;
+}
+
+.wave-frequency-ratio {
+  margin: 0;
+  color: #c1d3da;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 620px) {
+  #wave-chart {
+    margin-inline: 9px;
+  }
+
+  .wave-node-row {
+    grid-template-columns: 1fr;
+  }
+}

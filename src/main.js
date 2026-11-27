@@ -1,7 +1,7 @@
 import { archiveOriginal } from './recovery.js';
 import './style.css';
-import { DEFAULT_CONFIG, normalizeConfig, getSnapshot, wrapPhase, normalizeProbeRatio } from './model.js';
-import { createProject, parseProject, serializeProject, normalizeView, DEFAULT_VIEW } from './project.js';
+import { AIR_TEMPERATURE_C, DEFAULT_CONFIG, normalizeConfig, getSnapshot, soundSpeedMps, wrapPhase, normalizeProbeRatio } from './model.js';
+import { createProject, parseProject, serializeProject, normalizeView, normalizeDisplayPeriodS, DEFAULT_VIEW, DISPLAY_PERIOD_S } from './project.js';
 import { COMPONENTS } from './geometry.js';
 import { SoundScene } from './scene.js';
 import { WaveChart } from './chart.js';
@@ -15,10 +15,12 @@ const $ = selector => document.querySelector(selector), $$ = selector => [...doc
 const text = (selector, value) => { const element = $(selector); if (element.textContent !== value) element.textContent = value; };
 const copy = value => structuredClone(value), fmt = (value, digits = 1) => (Math.abs(value) < .5 * 10 ** -digits ? 0 : value).toLocaleString('ko-KR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const boundaryName = config => config.boundary === 'open-open' ? '양끝 열림' : '왼쪽 막힘';
-const conditionName = exp => `${fmt(exp.config.lengthM, 2)} m · ${boundaryName(exp.config)} · ${exp.config.mode}모드 · 위상 ${fmt(exp.phaseRad * 180 / Math.PI, 1)}°`;
+const temperatureOf = config => config.temperatureC ?? AIR_TEMPERATURE_C.default;
+const conditionName = exp => `${fmt(exp.config.lengthM, 2)} m · ${boundaryName(exp.config)} · ${exp.config.mode}모드 · ${temperatureOf(exp.config).toLocaleString('ko-KR')} °C · 위상 ${fmt(exp.phaseRad * 180 / Math.PI, 1)}°`;
 const STORAGE_KEY = 'sound-lab-project-v1', desktop = window.soundDesktop;
 const initialExperiment = config => ({ config: copy(config), phaseRad: 0, probeRatio: .5 });
 let experiment = initialExperiment(DEFAULT_CONFIG), view = normalizeView(DEFAULT_VIEW), comparison = null, snapshot;
+let displayPeriodS = DISPLAY_PERIOD_S.default;
 let scene = null, initialCamera = null, guide = null, previous = null, busy = false, restoring = false, chartDisplay = 'both';
 let running = false, frameId = null, lastTick = 0, lastPaint = 0, lastSave = 0;
 let saveTimer, toastTimer, recoveredRaw = null, storageBlocked = false;
@@ -37,7 +39,10 @@ function toast(message) {
   toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 6500);
 }
 function updateSnapshot() { snapshot = getSnapshot(experiment.config, { phaseRad: experiment.phaseRad, probeRatio: experiment.probeRatio }); }
-function capture() { return createProject({ experiment, comparison, view, camera: scene?.getProjectCameraState?.() ?? scene?.getCameraState() ?? initialCamera }); }
+function capture() {
+  return createProject({ experiment, comparison, view, camera: scene?.getProjectCameraState?.() ?? scene?.getCameraState() ?? initialCamera,
+    displayPeriodS: displayPeriodS === DISPLAY_PERIOD_S.default ? undefined : displayPeriodS });
+}
 function selectPart(id) {
   if (!COMPONENTS.some(part => part.id === id)) throw new RangeError('Unknown sound component');
   view.selectedPart = id;
@@ -65,14 +70,21 @@ function protectOriginal(raw, future) {
 }
 try {
   const raw = localStorage.getItem(STORAGE_KEY);
-  if (raw !== null) try { const saved = parseProject(raw); ({ experiment, comparison } = saved); ({ view, camera: initialCamera } = saved.observation); }
+  if (raw !== null) try {
+    const saved = parseProject(raw); ({ experiment, comparison } = saved);
+    ({ view, camera: initialCamera, displayPeriodS = DISPLAY_PERIOD_S.default } = saved.observation);
+  }
   catch (error) { protectOriginal(raw, error.futureVersion); }
 } catch { storageBlocked = true; text('#save-status', '자동 저장을 사용할 수 없습니다 · 파일로 보관하세요'); }
 updateSnapshot();
 
+function elapsedPhase(milliseconds) {
+  const cycleMs = displayPeriodS * 1000;
+  return (milliseconds % cycleMs) / cycleMs * (2 * Math.PI);
+}
 function syncTime(now = performance.now()) {
   if (!running || now <= lastTick) return;
-  experiment.phaseRad = wrapPhase(experiment.phaseRad + (now - lastTick) * Math.PI / 1000); lastTick = now; updateSnapshot();
+  experiment.phaseRad = wrapPhase(experiment.phaseRad + elapsedPhase(now - lastTick)); lastTick = now; updateSnapshot();
 }
 function frame(now) {
   frameId = null; syncTime(now); scene?.update(snapshot, view);
@@ -91,7 +103,10 @@ function togglePlay() {
 }
 function setPhase(degrees) {
   if (busy || !Number.isFinite(degrees)) return;
-  pause(); experiment.phaseRad = wrapPhase(degrees * Math.PI / 180); updateSnapshot(); refresh(); scheduleSave();
+  pause(); applyPhase(degrees * Math.PI / 180);
+}
+function applyPhase(phaseRad) {
+  experiment.phaseRad = wrapPhase(phaseRad); updateSnapshot(); refresh(); scheduleSave();
 }
 function setProbe(ratio) {
   if (busy) return; syncTime(); experiment.probeRatio = normalizeProbeRatio(ratio); updateSnapshot(); refresh(); scheduleSave();
@@ -102,17 +117,30 @@ function changeConfig(patch) {
   if (Object.keys(config).every(key => config[key] === experiment.config[key])) { syncControls(); return; }
   pause(); tone.stop(); if (config.lengthM !== experiment.config.lengthM || config.boundary !== experiment.config.boundary) scene?.endInspection?.(); experiment.config = config; updateSnapshot(); syncControls(); refresh(); scheduleSave();
 }
+function changeDisplayPeriod(value) {
+  if (busy || guide?.status === 'active' || !Number.isFinite(value)) { syncControls(); return; }
+  const periodS = normalizeDisplayPeriodS(value);
+  if (periodS !== displayPeriodS) {
+    syncTime(); displayPeriodS = periodS; refresh(); scheduleSave();
+  }
+  syncControls();
+}
 function remember() { syncTime(); previous = { project: capture(), guide: copy(guide) }; $('#undo-new').hidden = false; }
 function readProject(project, restoredGuide = null) {
   const saved = parseProject(serializeProject(project));
   pause(); tone.stop(); scene?.endInspection?.(); restoring = true;
-  try { ({ experiment, comparison } = saved); ({ view, camera: initialCamera } = saved.observation); guide = restoredGuide; chartDisplay = 'both'; updateSnapshot(); syncControls(); refresh(); if (initialCamera) scene?.setCameraState(initialCamera); else scene?.resetCamera(); }
+  try {
+    ({ experiment, comparison } = saved);
+    ({ view, camera: initialCamera, displayPeriodS = DISPLAY_PERIOD_S.default } = saved.observation);
+    guide = restoredGuide; chartDisplay = 'both'; updateSnapshot(); syncControls(); refresh();
+    if (initialCamera) scene?.setCameraState(initialCamera); else scene?.resetCamera();
+  }
   finally { restoring = false; }
   saveLocal();
 }
 function newExperiment() {
   if (busy) return; pause(); tone.stop(); remember(); scene?.endInspection?.(); initialCamera = null; experiment = initialExperiment(DEFAULT_CONFIG); comparison = null; guide = null;
-  view = normalizeView(DEFAULT_VIEW); chartDisplay = 'both'; updateSnapshot(); syncControls(); refresh(); scene?.resetCamera(); saveLocal(); toast('새 실험을 시작했습니다. 직전 실험은 되돌릴 수 있습니다.');
+  view = normalizeView(DEFAULT_VIEW); displayPeriodS = DISPLAY_PERIOD_S.default; chartDisplay = 'both'; updateSnapshot(); syncControls(); refresh(); scene?.resetCamera(); saveLocal(); toast('새 실험을 시작했습니다. 직전 실험은 되돌릴 수 있습니다.');
 }
 function setBusy(value) {
   if (value) { pause(); tone.stop(); }
@@ -122,6 +150,7 @@ function setBusy(value) {
 function syncControls() {
   $('#length').value = experiment.config.lengthM; $('#length-number').value = experiment.config.lengthM;
   $('#boundary').value = experiment.config.boundary; $('#mode').value = experiment.config.mode;
+  $('#air-temperature').value = temperatureOf(experiment.config); $('#display-period').value = displayPeriodS;
   $('#part-select').value = view.selectedPart;
   for (const input of $$('[data-view]')) input.checked = view[input.dataset.view];
   for (const button of $$('[data-lesson]')) button.setAttribute('aria-pressed', String(button.dataset.lesson === guide?.id));
@@ -131,6 +160,9 @@ function drawChart() {
   chart.update(snapshot, saved, chartDisplay);
 }
 function renderGuide() {
+  const observing = guide?.status === 'active';
+  $('#air-temperature').disabled = observing; $('#display-period').disabled = observing;
+  $('#lesson-temperature-hint').hidden = !observing; $('#lesson-clock-hint').hidden = !observing;
   $('#lesson-guide').hidden = !guide; if (!guide) return;
   const info = guideText(guide); text('#guide-title', LESSONS[guide.id].title);
   text('#guide-progress', guide.status === 'completed' ? '관찰 완료' : `관찰 ${guide.stage + 1} / ${info.total}`);
@@ -141,17 +173,21 @@ function renderGuide() {
 }
 function refresh(paint = true) {
   const frequencyText = `${fmt(snapshot.frequencyHz, 1)} Hz`;
+  const soundSpeedText = `음속 ${fmt(soundSpeedMps(snapshot.config.temperatureC), 1)} m/s`;
+  const displayPeriodText = `한 주기 ${displayPeriodS.toLocaleString('ko-KR')}초`;
   const harmonicText = `${experiment.config.mode}번째 모드 · 기본음의 ${snapshot.harmonic}배${snapshot.harmonic > 1 ? ` (${snapshot.harmonic}차 고조파)` : ''}`;
   text('#frequency', frequencyText); text('#wavelength', `${fmt(snapshot.wavelengthM, 3)} m`); text('#period', `${fmt(snapshot.periodS * 1000, 3)} ms`);
   text('#harmonic', harmonicText);
   text('#condition-frequency', frequencyText); text('#condition-harmonic', harmonicText);
   text('#condition-boundary', `${boundaryName(experiment.config)} · ${fmt(experiment.config.lengthM, 2)} m`);
+  text('#sound-speed', `${soundSpeedText} · 건조 공기`); text('#condition-sound-speed', soundSpeedText);
+  text('#display-period-reading', `화면은 ${displayPeriodText}로 관찰`);
   text('#boundary-reading', boundaryName(experiment.config)); text('#length-reading', `관 길이 ${fmt(experiment.config.lengthM, 2)} m · 내경 40 mm`);
-  text('#play', running ? '일시정지' : '재생'); text('#play-state', running ? '한 주기 2초' : '정지');
+  text('#play', running ? '일시정지' : '재생'); text('#play-state', running ? displayPeriodText : '정지');
   text('#phase-reading', `${fmt(experiment.phaseRad * 180 / Math.PI, 1)}°`); $('#phase').value = experiment.phaseRad * 180 / Math.PI;
   $('#probe').value = experiment.probeRatio * 100; text('#probe-position', `${fmt(experiment.probeRatio * 100, 1)}%`); text('#probe-meters', `왼쪽에서 ${fmt(snapshot.probe.xM, 3)} m`);
   text('#probe-pressure', fmt(snapshot.probe.pressureRelative, 3)); text('#probe-displacement', fmt(snapshot.probe.displacementRelative, 3)); text('#probe-velocity', fmt(snapshot.probe.velocityRelative, 3));
-  const detail = detailPanel.render(snapshot, view.selectedPart);
+  const detail = detailPanel.render(snapshot, view.selectedPart, { displayPeriodS });
   text('#node-reading', `${detail.probe.pressureIsNode ? '압력 마디' : detail.probe.pressureIsAntinode ? '압력 배' : '압력 마디 사이'} · ${detail.probe.motionIsNode ? '변위·속도 마디' : detail.probe.motionIsAntinode ? '변위·속도 배' : '변위 마디 사이'} (고정 포락선 기준)`);
   const inspection = scene?.getInspection?.();
   $('#inspection-strip').hidden = !inspection; text('#inspection-note', inspection?.note ?? '');
@@ -168,7 +204,7 @@ function refresh(paint = true) {
 function startLesson(id) {
   if (busy || !LESSONS[id]) return; pause(); tone.stop(); remember(); scene?.endInspection?.();
   initialCamera = null; experiment = initialExperiment(LESSONS[id].config); if (id === 'nodes') experiment.probeRatio = 0;
-  guide = createGuide(id); comparison = null; chartDisplay = 'both'; view = normalizeView(DEFAULT_VIEW);
+  guide = createGuide(id); comparison = null; chartDisplay = 'both'; view = normalizeView(DEFAULT_VIEW); displayPeriodS = DISPLAY_PERIOD_S.default;
   updateSnapshot(); syncControls(); refresh(); scene?.resetCamera(); saveLocal();
   $('#lesson-guide').scrollIntoView({ block: 'nearest' });
 }
@@ -205,6 +241,12 @@ $('#length').addEventListener('input', event => changeConfig({ lengthM: Number(e
 $('#length-number').addEventListener('change', event => { const value = Number(event.target.value); if (event.target.value.trim() && Number.isFinite(value)) changeConfig({ lengthM: value }); else syncControls(); });
 $('#boundary').addEventListener('change', event => changeConfig({ boundary: event.target.value }));
 $('#mode').addEventListener('change', event => changeConfig({ mode: Number(event.target.value) }));
+$('#air-temperature').addEventListener('change', event => {
+  const { valueAsNumber } = event.target;
+  if (busy || guide?.status === 'active' || !Number.isFinite(valueAsNumber)) { syncControls(); return; }
+  changeConfig({ temperatureC: valueAsNumber });
+});
+$('#display-period').addEventListener('change', event => changeDisplayPeriod(event.target.valueAsNumber));
 $('#play').addEventListener('click', togglePlay); $('#reset-phase').addEventListener('click', () => setPhase(0));
 $('#phase').addEventListener('input', event => setPhase(Number(event.target.value)));
 $('#probe').addEventListener('input', event => setProbe(Number(event.target.value) / 100));
@@ -236,9 +278,13 @@ desktop?.onCommand(command => { if (busy) return; const commands = { 'new-projec
 window.addEventListener('beforeunload', () => { syncTime(); saveLocal(); tone.dispose(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { pause(); tone.stop(); } });
 new ResizeObserver(drawChart).observe($('#wave-chart'));
-window.soundLab = { getState: () => copy({ experiment, snapshot, view, comparison, running }), project: () => { syncTime(); return copy(capture()); },
+window.soundLab = { getState: () => copy({ experiment, snapshot, view, comparison, running, displayPeriodS }), project: () => { syncTime(); return copy(capture()); },
   loadProject: raw => { const saved = parseProject(raw); remember(); readProject(saved); return copy(capture()); }, sceneDebug: () => scene?.getDebug() ?? null,
-  guide: () => copy(guide), chartDebug: () => copy(chart.debug), audioState: () => tone.getState(), setPhase, setProbe, getDetail: () => soundDetail(snapshot),
+  guide: () => copy(guide), chartDebug: () => copy(chart.debug), audioState: () => tone.getState(), setPhase, setProbe, getDetail: () => soundDetail(snapshot, { displayPeriodS }),
   getInspection: () => scene?.getInspection?.() ?? null, beginInspection, endInspection };
-window.render_game_to_text = () => JSON.stringify({ mode: running ? 'running' : 'paused', coordinateSystem: 'x along tube; positions in m, pressure/displacement/velocity independently normalized; visual cycle 2 s', snapshot, selectedPart: view.selectedPart, inspection: scene?.getInspection?.() ?? null, audio: tone.getState(), comparison: Boolean(comparison) });
-window.advanceTime = milliseconds => { if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new RangeError('Expected nonnegative milliseconds'); setPhase(experiment.phaseRad * 180 / Math.PI + milliseconds * .18); return copy(snapshot); };
+window.render_game_to_text = () => JSON.stringify({ mode: running ? 'running' : 'paused', coordinateSystem: `x along tube; positions in m, pressure/displacement/velocity independently normalized; visual cycle ${displayPeriodS} s`, displayPeriodS, snapshot, selectedPart: view.selectedPart, inspection: scene?.getInspection?.() ?? null, audio: tone.getState(), comparison: Boolean(comparison) });
+window.advanceTime = milliseconds => {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new RangeError('Expected nonnegative milliseconds');
+  if (!busy) { pause(); applyPhase(experiment.phaseRad + elapsedPhase(milliseconds)); }
+  return copy(snapshot);
+};

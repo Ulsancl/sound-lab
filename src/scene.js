@@ -2,14 +2,18 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { COMPONENTS, DEFAULT_VIEW, GEOMETRY as G, tubeLayout, particlePosition, probePosition, pressureColor, hollowTubeMesh } from './geometry.js';
-import { sleeveGeometry, boredBlockGeometry, supportBodyGeometry, probeBodyGeometry, collarSaddleGeometry, capGeometry, capSealGeometry } from './geometry-meshes.js';
+import { sleeveGeometry, boredBlockGeometry, supportBodyGeometry, probeBodyGeometry, collarSaddleGeometry, capGeometry, capSealGeometry, turnedGeometry } from './geometry-meshes.js';
 import './scene.css';
 
 const V = value => new THREE.Vector3(...value);
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 const clean = value => Object.is(value, -0) ? 0 : value;
 const TAU = Math.PI * 2;
+const MARKER_COUNT = 33;
+const TRACER_OFFSETS = [[-.006, -.008], [0, 0], [.006, .008]];
+const FIELD_COLORS = { pressure: '#88d9f4', displacement: '#ffc17a', particle: '#fff3d6' };
 
 export class SoundScene {
   constructor(container, { onSelect = () => {}, onCameraChange = () => {} } = {}) {
@@ -19,24 +23,27 @@ export class SoundScene {
     container.classList.add('sound-scene');
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.7)); this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.03;
+    this.renderer.transmissionResolutionScale = .85;
     this.renderer.shadowMap.enabled = true; this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.domElement.setAttribute('aria-label', '속이 빈 관과 끝마개, 가상 탐침, 종방향 공기 운동의 3D 실험대');
+    this.renderer.domElement.setAttribute('aria-description', '방향키로 시점 이동, Shift와 방향키로 회전');
     this.renderer.domElement.tabIndex = 0; container.append(this.renderer.domElement);
-    this.scene = new THREE.Scene(); this.scene.background = new THREE.Color('#20353e');
+    this.scene = new THREE.Scene(); this.scene.background = new THREE.Color('#202e36'); this.scene.fog = new THREE.FogExp2('#202e36', .27);
     this.camera = new THREE.PerspectiveCamera(35, 1, .002, 40);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement); this.controls.enableDamping = false;
+    this.controls.listenToKeyEvents(this.renderer.domElement);
     this.controls.minDistance = .05; this.controls.maxDistance = 10; this.controls.maxPolarAngle = Math.PI;
     this.controls.zoomSpeed = .7; this.controls.panSpeed = .6;
     this.controlsChanged = () => { if (!this.updating && !this.disposed) { this.render(); this.onCameraChange(this.getProjectCameraState()); } };
     this.controls.addEventListener('change', this.controlsChanged);
     const room = new RoomEnvironment(), pmrem = new THREE.PMREMGenerator(this.renderer);
     this.environment = pmrem.fromScene(room, .04); room.dispose(); pmrem.dispose();
-    this.scene.environment = this.environment.texture; this.scene.environmentIntensity = .85;
-    this.scene.add(new THREE.HemisphereLight('#d6eaff', '#26323a', 1.8));
-    const key = new THREE.DirectionalLight('#fff1d9', 3); key.position.set(-.7, 1.4, 1); key.castShadow = true;
-    key.shadow.mapSize.set(2048, 2048); Object.assign(key.shadow.camera, { left: -.95, right: .95, top: .65, bottom: -.65, near: .1, far: 5 }); key.shadow.normalBias = .0006; this.scene.add(key);
-    const rim = new THREE.DirectionalLight('#aacfff', 2); rim.position.set(.8, .6, -1.2); this.scene.add(rim);
+    this.scene.environment = this.environment.texture; this.scene.environmentIntensity = .9;
+    this.scene.add(new THREE.HemisphereLight('#dcefff', '#26323a', 1.55));
+    const key = new THREE.DirectionalLight('#fff1d9', 3); key.position.set(-.6, 1.2, .72); key.castShadow = true;
+    key.shadow.mapSize.set(2048, 2048); Object.assign(key.shadow.camera, { left: -.95, right: .95, top: .65, bottom: -.65, near: .1, far: 5 }); key.shadow.normalBias = .00035; this.scene.add(key);
+    const rim = new THREE.DirectionalLight('#a4d6ff', 2.7); rim.position.set(.8, .6, -1.2); this.scene.add(rim);
     this.root = new THREE.Group(); this.scene.add(this.root);
     this.makeMaterials(); for (const part of COMPONENTS) this.part(part.id);
     this.buildBench(); this.buildTube(); this.buildSupports(); this.buildCap(); this.buildProbe(); this.buildReadout(); this.buildField(); this.buildOverlay();
@@ -46,12 +53,20 @@ export class SoundScene {
   }
   material(values) { const material = new THREE.MeshStandardMaterial({ metalness: .72, roughness: .33, ...values }); this.materials.add(material); return material; }
   makeMaterials() {
+    const glass = new THREE.MeshPhysicalMaterial({ color: '#e1f1f3', metalness: 0, roughness: .035, transmission: 1, thickness: G.tube.outerRadiusM - G.tube.innerRadiusM, ior: 1.43, attenuationColor: '#c7e7ed', attenuationDistance: .036, clearcoat: .7, clearcoatRoughness: .06 });
+    this.materials.add(glass);
+    const toolMarks = this.canvasTexture(16, 256, THREE.NoColorSpace);
+    for (let y = 0; y < 256; y++) {
+      const value = Math.round(125 + 35 * Math.cos(y * 1.7) + 19 * Math.cos(y * .61));
+      toolMarks.context.fillStyle = `rgb(${value} ${value} ${value})`;
+      toolMarks.context.fillRect(0, y, 16, 1);
+    }
     this.mat = {
-      steel: this.material({ color: '#c6d1d7', metalness: .92, roughness: .25 }), aluminum: this.material({ color: '#bfced5', metalness: .88, roughness: .28 }),
-      dark: this.material({ color: '#28404c', metalness: .67, roughness: .43 }), base: this.material({ color: '#44616c', metalness: .48, roughness: .54 }),
-      black: this.material({ color: '#16252d', metalness: .16, roughness: .59 }), rubber: this.material({ color: '#151f25', metalness: .04, roughness: .83 }),
-      brass: this.material({ color: '#ddb478', metalness: .76, roughness: .31 }), cyan: this.material({ color: '#6bc6df', metalness: .15, roughness: .32 }),
-      white: this.material({ color: '#d8e8ea', metalness: .05, roughness: .61 }),
+      glass, steel: this.material({ color: '#bccbd2', metalness: .96, roughness: .22 }),
+      machined: this.material({ color: '#c4cdd1', metalness: .85, roughness: .32, bumpMap: toolMarks.texture, bumpScale: .00012 }),
+      dark: this.material({ color: '#28424e', metalness: .5, roughness: .49 }), base: this.material({ color: '#263c48', metalness: .35, roughness: .48 }),
+      black: this.material({ color: '#1c272c', metalness: .26, roughness: .49 }), rubber: this.material({ color: '#161d21', metalness: .02, roughness: .92 }),
+      seal: this.material({ color: '#874936', metalness: .05, roughness: .74 }), brass: this.material({ color: '#bd9961', metalness: .73, roughness: .35 }),
     };
   }
   part(id) { const node = new THREE.Group(); node.name = id; node.userData.partId = id; this.root.add(node); this.components.set(id, { ...COMPONENTS.find(part => part.id === id), node, anchor: new THREE.Vector3() }); return node; }
@@ -70,6 +85,18 @@ export class SoundScene {
     const geometry = new THREE.TorusGeometry(radius, wire, 8, 64); if (axis === 'x') geometry.rotateY(Math.PI / 2); else if (axis === 'y') geometry.rotateX(Math.PI / 2);
     return this.mesh(geometry, material, parent, position);
   }
+  grip(radius, length, material, parent, position, axis) {
+    const geometry = new THREE.CylinderGeometry(radius, radius, length, 96);
+    const vertices = geometry.getAttribute('position');
+    for (let i = 0; i < vertices.count; i++) {
+      const x = vertices.getX(i), z = vertices.getZ(i);
+      const groove = 1 - .045 * (1 + Math.cos(24 * Math.atan2(x, z)));
+      vertices.setX(i, groove * x); vertices.setZ(i, groove * z);
+    }
+    geometry.computeVertexNormals();
+    if (axis === 'x') geometry.rotateZ(-Math.PI / 2); else geometry.rotateX(Math.PI / 2);
+    return this.mesh(geometry, material, parent, position);
+  }
   wire(points, radius, material, parent) { return this.mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points.map(V)), 48, radius, 8, false), material, parent); }
   bolt(parent, position) { this.cylinder(.0035, .003, this.mat.steel, parent, position, 'y', 6); this.cylinder(.0015, .0031, this.mat.black, parent, position, 'y', 6); }
   surface(data) { const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3)); geometry.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3)); geometry.computeBoundingBox(); return geometry; }
@@ -82,14 +109,22 @@ export class SoundScene {
     }
     return this.surface(data);
   }
-  canvasTexture(width, height) {
+  canvasTexture(width, height, colorSpace = THREE.SRGBColorSpace) {
     const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
-    const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace; this.textures.add(texture);
+    const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = colorSpace; this.textures.add(texture);
     return { canvas, context: canvas.getContext('2d'), texture };
   }
   buildBench() {
-    const bench = this.node('bench-base'); this.bench = this.box([1, G.bench.size[1], G.bench.size[2]], this.mat.base, bench, G.bench.center, .006);
-    this.feet = []; for (const side of [-1, 1]) for (const z of [-.13, .18]) { const group = new THREE.Group(); group.userData.side = side; bench.add(group); this.cylinder(.023, .008, this.mat.rubber, group, [0, .0045, z]); this.bolt(group, [0, .035, z]); this.feet.push(group); }
+    const bench = this.node('bench-base');
+    this.bench = this.box([1, G.bench.size[1], G.bench.size[2]], this.mat.base, bench, G.bench.center, .005);
+    this.benchTrim = [-1, 1].map(side => this.box([.985, .0026, .002], this.mat.machined, bench, [0, .017, G.bench.center[2] + side * G.bench.size[2] / 2], .0006));
+    this.feet = [];
+    for (const side of [-1, 1]) for (const z of [-.13, .18]) {
+      const group = new THREE.Group(); group.userData.side = side; bench.add(group);
+      this.mesh(turnedGeometry([[-.004, 0], [-.004, .019], [-.0025, .023], [0, .023], [.004, .018], [.004, 0]], 48).rotateZ(Math.PI / 2), this.mat.rubber, group, [0, .0045, z]);
+      this.cylinder(.017, .002, this.mat.dark, group, [0, .0085, z]);
+      this.cylinder(.007, .0012, this.mat.black, group, [0, G.bench.topY, z]); this.bolt(group, [0, .035, z]); this.feet.push(group);
+    }
     this.anchor('bench-base', [0, .035, .208]);
     this.rails = []; const rail = this.node('rail');
     for (const z of G.rails.z) { const mesh = this.cylinder(G.rails.radiusM, 1, this.mat.steel, rail, [0, G.rails.centerY, z], 'x', 64); this.rails.push(mesh); }
@@ -105,20 +140,33 @@ export class SoundScene {
       this.railBrackets.push(group);
     }
     this.anchor('rail', [0, G.rails.centerY, .075]);
-    const scale = this.node('scale'); this.scaleBacking = this.box([1, .025, .003], this.mat.dark, scale, [0, .086, .098], .0005);
+    const scale = this.node('scale'); this.scaleBacking = this.box([1, .025, .004], this.mat.machined, scale, [0, .086, .098], .0005);
     const image = this.canvasTexture(1536, 96); Object.assign(this, { scaleContext: image.context, scaleTexture: image.texture });
-    this.scaleFace = this.mesh(new THREE.PlaneGeometry(1, .025), this.material({ map: image.texture, metalness: .35, roughness: .64 }), scale, [0, .086, .100]);
+    this.scaleFace = this.mesh(new THREE.PlaneGeometry(1, .023), new THREE.MeshBasicMaterial({ map: image.texture, toneMapped: false }), scale, [0, .086, .1001], false);
+    this.scaleFace.castShadow = false;
+    this.scaleMounts = [-1, 1].map(() => this.box([.011, .014, .015], this.mat.dark, scale, [0, .076, .091], .001));
     this.anchor('scale', [0, .086, .10]);
-    const ground = this.mesh(new THREE.PlaneGeometry(40, 30), this.material({ color: '#34515b', roughness: .91, metalness: .05 }), this.scene, [0, -.001, 0]); ground.rotation.x = -Math.PI / 2; ground.castShadow = false; this.ground = ground;
+    const ground = this.mesh(new THREE.PlaneGeometry(40, 30), this.material({ color: '#283942', roughness: .94, metalness: .02 }), this.scene, [0, -.001, 0]); ground.rotation.x = -Math.PI / 2; ground.castShadow = false; this.ground = ground;
   }
   buildTube() {
-    const node = this.node('tube-wall'); this.tubeFull = this.mesh(this.surface(hollowTubeMesh(1, false)), this.mat.aluminum, node);
-    this.tubeCut = this.mesh(this.surface(hollowTubeMesh(1, true)), this.mat.aluminum, node); this.tubeFull.visible = false;
+    const node = this.node('tube-wall'); this.tubeFull = this.mesh(this.surface(hollowTubeMesh(1, false)), this.mat.glass, node);
+    this.tubeCut = this.mesh(this.surface(hollowTubeMesh(1, true)), this.mat.glass, node); this.tubeFull.visible = false;
+    for (const shell of [this.tubeFull, this.tubeCut]) { shell.castShadow = false; shell.receiveShadow = false; }
+    this.tubeLips = [];
+    for (const cutaway of [false, true]) {
+      const data = hollowTubeMesh(1, cutaway), endFaces = { positions: [], normals: [] };
+      for (let i = 0; i < data.normals.length; i += 9) {
+        if (Math.abs(data.normals[i]) !== 1) continue;
+        endFaces.positions.push(...data.positions.slice(i, i + 9)); endFaces.normals.push(...data.normals.slice(i, i + 9));
+      }
+      const lip = this.mesh(this.surface(endFaces), this.material({ color: '#a3c7cf', metalness: .48, roughness: .23, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }), node);
+      lip.castShadow = false; lip.userData.nonPickable = true; this.tubeLips.push(lip);
+    }
     this.anchor('tube-wall', [0, G.tube.innerRadiusM * .5, -G.tube.innerRadiusM * .84]);
     const collars = this.node('tube-collars'); this.collars = [];
     for (let i = 0; i < 2; i++) {
       const group = new THREE.Group(); collars.add(group); const full = this.mesh(this.collarGeometry(false), this.mat.steel, group), cut = this.mesh(this.collarGeometry(true), this.mat.steel, group);
-      for (const z of [-.028, .028]) { this.box([.030, .009, .009], this.mat.dark, group, [0, -.018, z]); this.bolt(group, [0, -.012, z]); }
+      for (const z of [-.028, .028]) { this.box([.030, .010, .011], this.mat.dark, group, [0, -.013, z]); this.bolt(group, [0, -.007, z]); }
       this.collars.push({ group, full, cut });
     }
   }
@@ -129,31 +177,60 @@ export class SoundScene {
       for (const z of G.rails.z) bushes.push(this.mesh(sleeveGeometry(G.support.bushInnerRadiusM, G.support.bushOuterRadiusM, G.support.bushLengthM), this.mat.brass, node, [0, G.rails.centerY, z]));
       this.box([.037, G.support.saddleBottomY - G.support.topY, .037], this.mat.dark, node, [0, (G.support.saddleBottomY + G.support.topY) / 2, 0], .0015);
       const saddle = this.mesh(collarSaddleGeometry(), this.mat.black, node);
+      this.box([.031, .004, .039], this.mat.machined, node, [0, .1, 0], .0007);
+      this.box([.060, .002, .055], this.mat.rubber, node, [0, G.support.bottomY - .001, 0], .0004);
       for (const z of [-.064, .064]) this.bolt(node, [0, G.support.topY + .0015, z]);
       this.supportDetails.push({ id, body, bushes, saddle });
       this.anchor(id, [0, .100, .021]);
     }
   }
   buildCap() {
-    const cap = this.node('end-cap'); this.capDisk = this.mesh(capGeometry(), this.mat.steel, cap);
-    this.capSeal = this.mesh(capSealGeometry(), this.mat.rubber, cap);
-    this.cylinder(.008, .015, this.mat.dark, cap, [-.0125, 0, 0], 'x'); this.cylinder(.015, .010, this.mat.black, cap, [-.0245, 0, 0], 'x');
+    const cap = this.node('end-cap'), disk = capGeometry();
+    const face = this.canvasTexture(256, 256), { context } = face;
+    context.fillStyle = '#e2e2e2'; context.fillRect(0, 0, 256, 256);
+    for (let radius = 1; radius < 129; radius += .81) {
+      const shade = Math.round(215 + 11 * Math.sin(radius * 3.37) + 9 * Math.cos(radius * .49));
+      context.strokeStyle = `rgb(${shade} ${shade} ${shade})`;
+      context.lineWidth = radius % 9 < .6 ? .54 : .27;
+      context.beginPath(); context.arc(128, 128, radius, 0, TAU); context.stroke();
+    }
+    const uv = disk.getAttribute('uv'), position = disk.getAttribute('position');
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, .5 + position.getY(i) / (2 * G.cap.radiusM), .5 + position.getZ(i) / (2 * G.cap.radiusM));
+    this.capDisk = this.mesh(disk, this.material({ color: '#cbd3d9', metalness: .83, roughness: .36, map: face.texture, bumpMap: face.texture, bumpScale: .00016 }), cap, null, false);
+    this.capSeal = this.mesh(capSealGeometry(), this.mat.seal, cap);
+    this.cylinder(.011, .004, this.mat.steel, cap, [-.007, 0, 0], 'x');
+    this.cylinder(.008, .014, this.mat.machined, cap, [-.0125, 0, 0], 'x');
+    this.grip(.015, .010, this.mat.black, cap, [-.0245, 0, 0], 'x');
+    this.cylinder(.012, .001, this.mat.machined, cap, [-.030, 0, 0], 'x');
     this.anchor('end-cap', [-.030, .004, .009]);
-    const stand = this.node('cap-stand'); this.box(G.capStand.size, this.mat.dark, stand, [0, G.capStand.center[1], G.capStand.center[2]], .002);
-    for (const x of [-.038, .038]) this.bolt(stand, [x, .0465, G.capStand.center[2]]);
+    const stand = this.node('cap-stand'), [width, height, depth] = G.capStand.size, [, y, z] = G.capStand.center;
+    this.box([width, height - .002, depth], this.mat.dark, stand, [0, y - .001, z], .002);
+    this.box([.055, .002, .041], this.mat.rubber, stand, [0, G.bench.topY + height - .001, z], .0004);
+    for (const x of [-.038, .038]) this.bolt(stand, [x, .0445, z]);
     this.anchor('cap-stand', [0, .045, .18]);
   }
   buildProbe() {
     const carriage = this.node('probe-carriage');
-    this.probeBody = this.mesh(probeBodyGeometry(), this.mat.brass, carriage, [0, 0, G.guide.centerZ]);
+    this.probeBody = this.mesh(probeBodyGeometry(), this.mat.dark, carriage, [0, 0, G.guide.centerZ]);
     this.probeBush = this.mesh(sleeveGeometry(G.guide.bushInnerRadiusM, G.guide.bushOuterRadiusM, G.guide.bushLengthM), this.mat.steel, carriage, [0, G.guide.centerY, G.guide.centerZ]);
     this.probePost = this.cylinder(.0037, 1, this.mat.steel, carriage, [0, .129, G.guide.centerZ]);
-    this.probeBoom = this.box([.010, .007, -G.guide.centerZ + .010], this.mat.dark, carriage, [0, .191, G.guide.centerZ / 2], .001);
-    this.probeKnob = this.cylinder(.009, .011, this.mat.brass, carriage, [0, .076, G.guide.centerZ - .020], 'z');
+    this.probeArm = new THREE.Group(); carriage.add(this.probeArm);
+    this.probeBoom = this.box([.010, .007, -G.guide.centerZ + .010], this.mat.dark, this.probeArm, [0, 0, G.guide.centerZ / 2], .001);
+    this.cylinder(.0055, .008, this.mat.machined, this.probeArm, [0, -.007, 0]);
+    this.cylinder(.0038, .002, this.mat.brass, this.probeArm, [0, -.012, 0]);
+    this.cylinder(.004, .005, this.mat.steel, carriage, [0, .076, G.guide.centerZ - .015], 'z');
+    this.grip(.009, .011, this.mat.brass, carriage, [0, .076, G.guide.centerZ - .021], 'z');
+    this.cylinder(.004, .010, this.mat.rubber, carriage, [0, .063, G.guide.centerZ - .017], 'z');
     this.anchor('probe-carriage', [0, .062, G.guide.centerZ - .017]);
-    const tip = this.node('probe-tip'); this.probeMarker = this.mesh(new THREE.IcosahedronGeometry(.004, 1), this.material({ color: '#f8dba6', emissive: '#7a5015', emissiveIntensity: .22, metalness: .3, wireframe: true }), tip);
-    this.probeCircle = this.ring(.009, .0007, this.mat.brass, tip, [0, 0, 0]); this.probeCircle.userData.nonPickable = true;
-    this.probeLeader = this.mesh(new THREE.CylinderGeometry(.00065, .00065, .043, 8), this.mat.brass, tip, [0, .0215, 0]); this.probeLeader.userData.nonPickable = true;
+    const tip = this.node('probe-tip'), reticle = new THREE.MeshBasicMaterial({ color: '#fdd6a1', toneMapped: false });
+    this.probeMarker = this.mesh(new THREE.OctahedronGeometry(.0032), reticle, tip, null, false);
+    this.probeCircle = this.ring(.006, .00045, reticle, tip, [0, 0, 0], 'z');
+    for (const item of [this.probeMarker, this.probeCircle]) { item.castShadow = false; item.receiveShadow = false; }
+    this.probeCircle.userData.nonPickable = true;
+    const leaderGeometry = new THREE.BufferGeometry().setFromPoints([V([0, .006, 0]), V([0, .028, 0])]);
+    const leaderMaterial = new THREE.LineDashedMaterial({ color: '#fdd6a1', dashSize: .002, gapSize: .0016, toneMapped: false });
+    this.geometries.add(leaderGeometry); this.materials.add(leaderMaterial);
+    const leader = new THREE.Line(leaderGeometry, leaderMaterial).computeLineDistances(); leader.userData.nonPickable = true; tip.add(leader);
     this.anchor('probe-tip', [0, 0, 0]);
     this.anchor('probe-cable', [0, .045, -.133]);
   }
@@ -161,44 +238,70 @@ export class SoundScene {
     const readout = this.node('readout'); this.box(G.readout.size, this.mat.dark, readout, [0, 0, 0], .005);
     this.box([.160, .053, .002], this.mat.black, readout, [0, .006, G.readout.size[2] / 2 + .0005], .002);
     const image = this.canvasTexture(768, 256); this.displayContext = image.context; this.displayTexture = image.texture;
-    this.displayFace = this.mesh(new THREE.PlaneGeometry(.149, .047), this.material({ map: image.texture, metalness: .03, roughness: .78 }), readout, [0, .006, .056]);
+    this.displayFace = this.mesh(new THREE.PlaneGeometry(.149, .047), new THREE.MeshBasicMaterial({ map: image.texture, toneMapped: false }), readout, [0, .006, .056], false);
+    this.displayFace.castShadow = false;
     for (const x of [-.080, .080]) { this.cylinder(.003, .002, this.mat.steel, readout, [x, -.024, .055], 'z', 6); }
     this.cylinder(.005, .007, this.mat.brass, readout, [-.078, .002, -.058], 'z');
     for (let i = 0; i < 6; i++) this.box([.001, .018, .002], this.mat.black, readout, [.0945, -.008, -.019 + i * .006], .0001);
     this.anchor('readout', [0, .012, .056]);
   }
   buildField() {
-    const parent = this.node('particles'); this.particleMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(G.particleRadiusM, 10, 8), this.material({ color: '#ffffff', metalness: .15, roughness: .38 }), 99);
-    this.geometries.add(this.particleMesh.geometry); this.materials.add(this.particleMesh.material); parent.add(this.particleMesh);
-    this.particleMesh.userData.partId = 'particles'; this.particleMesh.castShadow = false; this.particleMesh.count = 0;
-    this.pressureRibbon = this.mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, transparent: true, opacity: .78, depthWrite: false }), parent, null, false);
-    this.pressureRibbon.userData.nonPickable = true; this.pressureRibbon.castShadow = false; this.pressureRibbon.receiveShadow = false; this.pressureRibbon.renderOrder = 1;
+    const parent = this.node('particles');
+    const particleMaterial = this.material({ color: FIELD_COLORS.particle, metalness: .12, roughness: .36, emissive: '#8f6331', emissiveIntensity: .38 });
+    this.particleMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(G.particleRadiusM, 10, 8), particleMaterial, MARKER_COUNT * TRACER_OFFSETS.length);
+    const displacementMaterial = new THREE.MeshBasicMaterial({ color: FIELD_COLORS.displacement, toneMapped: false });
+    this.displacementMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, .0011, .0011), displacementMaterial, MARKER_COUNT);
+    this.displacementMesh.frustumCulled = false; this.displacementMesh.userData.nonPickable = true;
+    for (const item of [this.particleMesh, this.displacementMesh]) {
+      this.geometries.add(item.geometry); this.materials.add(item.material); parent.add(item);
+      item.instanceMatrix.setUsage(THREE.DynamicDrawUsage); item.count = 0;
+    }
+    const pressureMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, toneMapped: false });
+    this.pressureRibbon = this.mesh(new THREE.BufferGeometry(), pressureMaterial, parent, null, false);
+    this.pressureRibbon.userData.nonPickable = true; this.pressureRibbon.castShadow = false; this.pressureRibbon.receiveShadow = false;
+    const pressureRing = new THREE.TorusGeometry(.019, .00085, 8, 64).rotateY(Math.PI / 2);
+    const arcs = Array.from({ length: 8 }, (_, i) => new THREE.TorusGeometry(.0145, .0008, 8, 6, TAU / 14).rotateZ(i * TAU / 8).rotateY(Math.PI / 2));
+    const displacementRing = mergeGeometries(arcs);
+    for (const arc of arcs) arc.dispose();
     this.nodeRings = [];
-    for (const kind of ['pressure', 'displacement']) for (let i = 0; i < 4; i++) {
-      const mesh = this.ring(kind === 'pressure' ? .019 : .014, .00055, kind === 'pressure' ? this.mat.cyan : this.mat.brass, parent, [0, 0, 0]); mesh.userData.nonPickable = true; mesh.castShadow = false; mesh.visible = false; this.nodeRings.push({ kind, mesh });
+    for (const [kind, geometry] of [['pressure', pressureRing], ['displacement', displacementRing]]) {
+      const material = new THREE.MeshBasicMaterial({ color: FIELD_COLORS[kind], toneMapped: false });
+      for (let i = 0; i < 4; i++) {
+        const mesh = this.mesh(geometry, material, parent, null, false);
+        mesh.userData.nonPickable = true; mesh.castShadow = false; mesh.receiveShadow = false; mesh.visible = false;
+        this.nodeRings.push({ kind, mesh });
+      }
     }
     this.anchor('particles', [0, .008, .006]);
   }
   applyLayout(layout) {
     this.layout = layout; this.bench.scale.x = layout.benchLengthM;
+    for (const trim of this.benchTrim) trim.scale.x = layout.benchLengthM;
     for (const foot of this.feet) foot.position.x = foot.userData.side * (layout.benchLengthM / 2 - .038);
     for (const rail of [...this.rails, this.guideRail]) rail.scale.y = layout.railLengthM;
     for (const bracket of this.railBrackets) bracket.position.x = bracket.userData.side * (layout.railLengthM / 2 - .012);
     this.node('tube-wall').position.set(...layout.center); this.tubeFull.scale.x = this.tubeCut.scale.x = layout.lengthM;
+    for (const lip of this.tubeLips) lip.scale.x = layout.lengthM;
     this.node('left-support').position.x = layout.supportXs[0]; this.node('right-support').position.x = layout.supportXs[1];
     for (const [i, collar] of this.collars.entries()) collar.group.position.set(layout.supportXs[i], layout.collarY, 0);
     this.anchor('tube-collars', [layout.supportXs[0], layout.collarY + .024, -.010]);
     this.node('end-cap').position.set(...layout.capCenter); this.node('cap-stand').position.x = layout.storedCapCenter[0]; this.node('readout').position.set(...layout.readoutCenter);
     this.scaleBacking.scale.x = this.scaleFace.scale.x = layout.lengthM;
+    for (const [i, mount] of this.scaleMounts.entries()) mount.position.x = layout.supportXs[i];
     this.node('particles').position.set(...layout.center);
-    const c = this.scaleContext; c.fillStyle = '#233a44'; c.fillRect(0, 0, 1536, 96); c.strokeStyle = '#cbdde3'; c.fillStyle = '#dfedef'; c.lineWidth = 2; c.font = '26px monospace'; c.textBaseline = 'top';
-    for (let mm = 0; mm <= Math.round(layout.lengthM * 1000); mm += 10) { const x = mm / (layout.lengthM * 1000) * 1536, major = mm % 100 === 0; c.beginPath(); c.moveTo(x, 0); c.lineTo(x, major ? 38 : mm % 50 === 0 ? 26 : 15); c.stroke(); if (major) { c.textAlign = mm === 0 ? 'left' : 'center'; c.fillText((mm / 1000).toFixed(1), x + (mm === 0 ? 5 : 0), 47); } }
-    c.textAlign = 'right'; c.fillText('m', 1527, 49); this.scaleTexture.needsUpdate = true;
+    const c = this.scaleContext, lengthMM = layout.lengthM * 1000;
+    c.fillStyle = '#252f34'; c.fillRect(0, 0, 1536, 96); c.strokeStyle = '#baccce'; c.fillStyle = '#e5eeee'; c.lineWidth = 3; c.font = '31px monospace'; c.textBaseline = 'top';
+    for (let mm = 0; mm <= lengthMM + 1e-7; mm += 10) {
+      const x = 3 + mm / lengthMM * 1530, major = mm % 100 === 0;
+      c.beginPath(); c.moveTo(x, 5); c.lineTo(x, major ? 43 : mm % 50 === 0 ? 33 : 23); c.stroke();
+      if (major && lengthMM - mm > 60) { c.textAlign = mm === 0 ? 'left' : 'center'; c.fillText((mm / 1000).toFixed(1), mm === 0 ? 10 : x, 52); }
+    }
+    c.textAlign = 'right'; c.fillText(`${Number(layout.lengthM.toFixed(3))} m`, 1526, 52); this.scaleTexture.needsUpdate = true;
   }
   updateProbe(snapshot) {
     const [x, y, z] = probePosition(snapshot.config.lengthM, snapshot.probeRatio, this.view.exploded);
     this.node('probe-carriage').position.x = x; this.node('probe-tip').position.set(x, y, z);
-    const top = y + .042, bottom = G.guide.bodyTopY; this.probePost.position.y = (top + bottom) / 2; this.probePost.scale.y = top - bottom; this.probeBoom.position.y = top;
+    const top = y + .042, bottom = G.guide.bodyTopY; this.probePost.position.y = (top + bottom) / 2; this.probePost.scale.y = top - bottom; this.probeArm.position.y = top;
     const key = `${x}|${this.layout.readoutCenter[0]}`;
     if (key !== this.wireKey) {
       if (this.probeWire) { this.probeWire.geometry.dispose(); this.geometries.delete(this.probeWire.geometry); this.probeWire.material.dispose(); this.materials.delete(this.probeWire.material); this.probeWire.removeFromParent(); }
@@ -207,23 +310,31 @@ export class SoundScene {
     }
   }
   updateField(snapshot) {
-    const samples = snapshot.samples, indices = Array.from({ length: Math.min(33, samples.length) }, (_, i) => Math.round(i * (samples.length - 1) / (Math.min(33, samples.length) - 1)));
-    const matrix = new THREE.Matrix4(), color = new THREE.Color(); this.particleEvidence = []; let index = 0;
-    for (const sampleIndex of indices) {
-      const sample = samples[sampleIndex], base = particlePosition(snapshot.config.lengthM, sample.positionRatio, sample.displacementRelative, this.view.exploded);
-      for (const [dy, dz] of [[-.007, -.005], [0, 0], [.007, .005]]) {
-        const local = [base[0], dy, dz]; matrix.makeTranslation(...local); this.particleMesh.setMatrixAt(index, matrix);
-        color.set(this.view.pressure ? pressureColor(sample.pressureRelative) : '#e9cf9c'); this.particleMesh.setColorAt(index, color);
+    const { samples, config: { lengthM } } = snapshot, count = Math.min(MARKER_COUNT, samples.length);
+    const matrix = new THREE.Matrix4(), color = new THREE.Color(); this.particleEvidence = [];
+    let index = 0, strokeCount = 0;
+    for (let i = 0; i < count; i++) {
+      const sampleIndex = Math.round(i * (samples.length - 1) / (count - 1)), sample = samples[sampleIndex];
+      const [x] = particlePosition(lengthM, sample.positionRatio, sample.displacementRelative, this.view.exploded);
+      for (const [dy, dz] of TRACER_OFFSETS) {
+        matrix.makeTranslation(x, dy, dz); this.particleMesh.setMatrixAt(index, matrix);
         this.particleEvidence.push({ instance: index, sampleIndex, positionRatio: sample.positionRatio, equilibriumXM: sample.xM, pressureRelative: sample.pressureRelative, displacementRelative: sample.displacementRelative, velocityRelative: sample.velocityRelative }); index++;
       }
+      const rest = (sample.positionRatio - .5) * lengthM, travel = Math.abs(x - rest);
+      if (i % 2 === 0 && travel > 0) {
+        matrix.makeScale(travel, 1, 1); matrix.setPosition((x + rest) / 2, 0, 0);
+        this.displacementMesh.setMatrixAt(strokeCount++, matrix);
+      }
     }
-    this.particleMesh.count = index; this.particleMesh.instanceMatrix.needsUpdate = true; if (this.particleMesh.instanceColor) this.particleMesh.instanceColor.needsUpdate = true;
+    this.particleMesh.count = index; this.particleMesh.instanceMatrix.needsUpdate = true;
     this.particleMesh.computeBoundingBox(); this.particleMesh.computeBoundingSphere(); this.particleMesh.visible = this.view.particles;
+    this.displacementMesh.count = strokeCount; this.displacementMesh.instanceMatrix.needsUpdate = true; this.displacementMesh.visible = this.view.particles;
     const positions = [], colors = [];
     for (let i = 0; i < samples.length - 1; i++) {
       const a = samples[i], b = samples[i + 1];
-      for (const [sample, z] of [[a, -.014], [b, -.014], [b, .014], [a, -.014], [b, .014], [a, .014]]) {
-        positions.push(sample.xM - snapshot.config.lengthM / 2, -.012, z); color.set(pressureColor(sample.pressureRelative)); colors.push(color.r, color.g, color.b);
+      // The strip stays the same size as its pressure color changes with phase.
+      for (const [sample, far] of [[a, true], [b, true], [b, false], [a, true], [b, false], [a, false]]) {
+        positions.push(sample.xM - lengthM / 2, far ? -.007 : -.017, far ? -.011 : .008); color.set(pressureColor(sample.pressureRelative)); colors.push(color.r, color.g, color.b);
       }
     }
     const geometry = this.pressureRibbon.geometry;
@@ -232,7 +343,7 @@ export class SoundScene {
     geometry.computeBoundingBox(); geometry.computeBoundingSphere(); this.pressureRibbon.visible = this.view.pressure;
     for (const kind of ['pressure', 'displacement']) {
       const ratios = snapshot.nodes[kind === 'pressure' ? 'pressureRatios' : 'displacementRatios'];
-      for (const [i, item] of this.nodeRings.filter(item => item.kind === kind).entries()) { item.mesh.visible = i < ratios.length && (kind === 'pressure' ? this.view.pressure : this.view.particles); if (i < ratios.length) item.mesh.position.x = (ratios[i] - .5) * snapshot.config.lengthM; }
+      for (const [i, item] of this.nodeRings.filter(item => item.kind === kind).entries()) { item.mesh.visible = i < ratios.length && (kind === 'pressure' ? this.view.pressure : this.view.particles); if (i < ratios.length) item.mesh.position.x = (ratios[i] - .5) * lengthM; }
     }
   }
   drawDisplay(snapshot) {
@@ -246,19 +357,20 @@ export class SoundScene {
     if (layoutKey !== this.layoutKey) { this.applyLayout(tubeLayout(snapshot.config.lengthM, snapshot.config.boundary, this.view.exploded)); this.layoutKey = layoutKey; }
     this.updateProbe(snapshot); this.updateField(snapshot); this.drawDisplay(snapshot); this.highlight();
     this.applyInspectionVisibility(); this.trackInspection();
-    this.note.textContent = this.view.exploded ? '분해 간격은 관찰용 · 계산은 조립된 이상관' : this.view.cutaway ? '관찰용 절개 · 축 방향 공기 운동을 확대 표시' : '조립 모습 · 절개하면 내부 표식을 볼 수 있습니다';
+    this.noteText.textContent = this.view.exploded ? '분해 간격은 관찰용' : this.view.cutaway ? '관찰용 절개' : '관벽 투과는 관찰용';
+    this.pressureLegend.hidden = !this.view.pressure; this.displacementLegend.hidden = !this.view.particles; this.tracerLegend.hidden = !this.view.particles;
     this.readout.textContent = `가상 탐침 ${(snapshot.probeRatio * 100).toFixed(1)}% · 상대 압력 ${snapshot.probe.pressureRelative >= 0 ? '+' : ''}${snapshot.probe.pressureRelative.toFixed(2)}`;
     this.updating = false; this.render();
   }
   inspectionDefinition(id) {
     const definitions = {
       rail: { kind: 'rail', parts: ['rail'], direction: [.9, .5, 1], note: '두 하중 레일과 뒤쪽 독립 탐침 가이드 · 받침은 관통 보어로 축을 감쌉니다.' },
-      'tube-wall': { kind: 'tube', parts: ['tube-wall'], direction: [.25, .3, 1], note: '관 벽 두께 3 mm · 앞쪽 120° 절개는 관찰용이며 음향 경계조건을 바꾸지 않습니다.' },
+      'tube-wall': { kind: 'tube', parts: ['tube-wall'], direction: [.34, .44, 1], note: '관 벽 두께 3 mm · 관벽 투과와 앞쪽 120° 절개는 관찰용입니다. 음향 계산은 균일한 이상관을 기준으로 합니다.' },
       'tube-collars': { kind: 'collar', parts: ['tube-collars', 'left-support'], direction: [.85, .5, 1], note: '왼쪽 고정 링과 오목 안장의 맞닿음 · 링 절개와 분해 간격은 구조 관찰용입니다.' },
       'left-support': { kind: 'support', parts: ['left-support'], direction: [1, .5, .85], note: '관통 보어와 중공 슬리브 · 레일과 슬리브의 대표 반지름 여유 0.2 mm, 실제 공차 해석은 아닙니다.' },
       'right-support': { kind: 'support', parts: ['right-support'], direction: [1, .5, .85], note: '관통 보어와 중공 슬리브 · 레일과 슬리브의 대표 반지름 여유 0.2 mm, 실제 공차 해석은 아닙니다.' },
-      'end-cap': { kind: 'cap', parts: ['end-cap'], direction: [.55, .30, 1], note: '씰 홈 관찰을 위해 밀봉 링만 축 방향 3 mm 인출 · 조립 시 링은 닫힘 평면과 같은 면에 놓입니다.' },
-      'probe-carriage': { kind: 'probe', parts: ['probe-carriage'], direction: [1, .35, .8], note: '뒤쪽 독립 가이드용 중공 슬리브 · 가상 탐침 X는 그대로이며 마이크 부하를 계산하지 않습니다.' },
+      'end-cap': { kind: 'cap', parts: ['end-cap'], direction: [.68, .32, 1], note: '씰 홈 관찰을 위해 밀봉 링만 축 방향 3 mm 인출 · 조립 시 링은 닫힘 평면과 같은 면에 놓입니다.' },
+      'probe-carriage': { kind: 'probe', parts: ['probe-carriage'], direction: [1, .38, -.72], note: '뒤쪽 독립 가이드용 중공 슬리브 · 가상 탐침 X는 그대로이며 마이크 부하를 계산하지 않습니다.' },
     };
     return definitions[id] ?? null;
   }
@@ -267,6 +379,7 @@ export class SoundScene {
     for (const [id, part] of this.components) part.node.visible = !allowed || allowed.has(id);
     this.ground.visible = !this.inspection;
     const cut = this.view.cutaway || definition?.kind === 'tube' || definition?.kind === 'collar'; this.tubeCut.visible = cut; this.tubeFull.visible = !cut;
+    this.tubeLips[0].visible = !cut; this.tubeLips[1].visible = cut;
     for (const [i, collar] of this.collars.entries()) { collar.group.visible = definition?.kind !== 'collar' || i === 0; collar.cut.visible = cut; collar.full.visible = !cut; }
     this.capSeal.position.x = definition?.kind === 'cap' ? .003 : 0;
     this.note.hidden = Boolean(this.inspection); this.readout.hidden = Boolean(this.inspection);
@@ -276,7 +389,7 @@ export class SoundScene {
     const id = this.inspection.id;
     if (id === 'rail') return V([0, G.rails.centerY, G.guide.centerZ / 3]);
     if (id === 'tube-collars') return V([this.layout.supportXs[0], this.layout.collarY, 0]);
-    if (id === 'probe-carriage') return V([this.node(id).position.x, (G.guide.bodyTopY + this.probeBoom.position.y) / 2, G.guide.centerZ / 2]);
+    if (id === 'probe-carriage') return V([this.node(id).position.x, (G.guide.bodyTopY + this.probeArm.position.y) / 2, G.guide.centerZ / 2]);
     return this.node(id).position.clone();
   }
   trackInspection() {
@@ -323,20 +436,34 @@ export class SoundScene {
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.classList.add('sound-leader'); line.append(path);
       const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle'); dot.setAttribute('r', '3'); line.append(dot); this.labels.set(part.id, { button, line, halo, path, dot });
     }
-    this.note = document.createElement('div'); this.note.className = 'sound-scene-note'; this.overlay.append(this.note);
-    this.readout = document.createElement('div'); this.readout.className = 'sound-probe-readout'; this.overlay.append(this.readout);
+    const footer = document.createElement('div'); footer.className = 'sound-scene-footer'; this.overlay.append(footer);
+    this.note = document.createElement('div'); this.note.className = 'sound-scene-note'; footer.append(this.note);
+    this.noteText = document.createElement('span'); this.note.append(this.noteText);
+    const legend = (name, text) => {
+      const item = document.createElement('span'); item.className = `sound-legend-${name}`; item.textContent = text; this.note.append(item); return item;
+    };
+    this.pressureLegend = legend('pressure', '압력 마디');
+    this.displacementLegend = legend('displacement', '변위 마디');
+    this.tracerLegend = legend('tracer', '축 방향 변위 · 확대 표시');
+    this.readout = document.createElement('div'); this.readout.className = 'sound-probe-readout'; footer.append(this.readout);
   }
   layoutLabels() {
     if (!this.width) return; this.root.updateMatrixWorld(true);
-    for (const [id, label] of this.labels) { label.button.hidden = true; label.line.style.display = 'none'; label.button.classList.toggle('is-selected', id === this.view.selectedPart); }
-    if (!this.view.labels || this.height < 180) return;
-    const ids = [...new Set([this.view.selectedPart, ...(this.focusContext || ['tube-wall', 'end-cap', 'probe-tip', 'readout'])])].slice(0, this.width < 480 ? 3 : 5), points = [];
+    for (const [id, label] of this.labels) {
+      const selected = id === this.view.selectedPart;
+      label.button.classList.toggle('is-selected', selected);
+      label.button.setAttribute('aria-pressed', String(selected));
+    }
+    const ids = this.view.labels && this.height >= 180
+      ? [...new Set([this.view.selectedPart, ...(this.focusContext || ['tube-wall', 'end-cap', 'probe-tip', 'readout'])])].slice(0, this.width < 480 ? 3 : 5)
+      : [];
+    const points = [], shown = new Set();
     for (const id of ids) {
       if (id === 'particles' && !this.view.particles && !this.view.pressure) continue;
       const part = this.components.get(id); if (!part || !this.actuallyVisible(part.node)) continue; const p = part.node.localToWorld(part.anchor.clone()).project(this.camera);
       if (Math.abs(p.x) > 1 || Math.abs(p.y) > 1 || p.z < -1 || p.z > 1) continue; points.push({ id, x: (p.x + 1) * this.width / 2, y: (1 - p.y) * this.height / 2 });
     }
-    const width = this.width < 620 ? Math.min(130, this.width * .35) : 158, height = 30, placed = [];
+    const width = this.width < 620 ? Math.min(130, this.width * .35) : 158, height = 32, placed = [];
     for (const p of points) {
       const candidates = [];
       if (this.inspection) {
@@ -344,7 +471,7 @@ export class SoundScene {
         candidates.push({ box, end, score: -1e9 });
       }
       for (const dy of [-60, -99, 39, 78, -138, 117]) for (const dx of [0, -width * .7, width * .7, -width, width]) {
-        const box = { x: clamp(p.x - width / 2 + dx, 9, this.width - width - 9), y: clamp(p.y + dy, 54, Math.max(54, this.height - 116)), w: width, h: height };
+        const box = { x: clamp(p.x - width / 2 + dx, 9, this.width - width - 9), y: clamp(p.y + dy, 36, Math.max(36, this.height - (this.width < 620 ? 122 : 88))), w: width, h: height };
         if (placed.some(b => box.x < b.x + b.w + 7 && box.x + box.w + 7 > b.x && box.y < b.y + b.h + 7 && box.y + box.h + 7 > b.y)) continue;
         const end = { x: clamp(p.x, box.x + 6, box.x + width - 6), y: clamp(p.y, box.y, box.y + height) };
         const covered = points.filter(q => q.x > box.x - 7 && q.x < box.x + width + 7 && q.y > box.y - 7 && q.y < box.y + height + 7).length;
@@ -352,9 +479,12 @@ export class SoundScene {
       }
       candidates.sort((a, b) => a.score - b.score); if (!candidates.length) continue; const { box, end } = candidates[0], label = this.labels.get(p.id); placed.push(box);
       let title = this.components.get(p.id).name; if (p.id === 'end-cap') title += this.layout.capClosed ? ' · 닫힘' : ' · 보관';
-      label.button.textContent = title; label.button.title = title; label.button.hidden = false; Object.assign(label.button.style, { left: `${box.x}px`, top: `${box.y}px`, width: `${width}px` });
-      const d = `M ${p.x} ${p.y} L ${end.x} ${end.y}`; label.halo.setAttribute('d', d); label.path.setAttribute('d', d); label.dot.setAttribute('cx', p.x); label.dot.setAttribute('cy', p.y); label.line.style.display = '';
+      if (label.button.textContent !== title) label.button.textContent = label.button.title = title;
+      Object.assign(label.button.style, { left: `${box.x}px`, top: `${box.y}px`, width: `${width}px` });
+      const d = `M ${p.x} ${p.y} L ${end.x} ${end.y}`; label.halo.setAttribute('d', d); label.path.setAttribute('d', d); label.dot.setAttribute('cx', p.x); label.dot.setAttribute('cy', p.y);
+      shown.add(p.id);
     }
+    for (const [id, label] of this.labels) { label.button.hidden = !shown.has(id); label.line.style.display = shown.has(id) ? '' : 'none'; }
   }
   visiblePoints(node) {
     this.root.updateMatrixWorld(true); const result = [];
@@ -382,7 +512,7 @@ export class SoundScene {
   resetCamera(preset = 'iso') {
     if (this.inspection) this.endInspection();
     this.focusContext = null; if (preset === 'cap') return this.focusPart('end-cap'); if (!['iso', 'side'].includes(preset)) return false;
-    return this.fit(COMPONENTS.filter(part => part.id !== 'probe-cable').map(part => part.id), preset === 'side' ? [.04, .13, 1] : [.47, .58, 1], .77);
+    return this.fit(COMPONENTS.filter(part => part.id !== 'probe-cable').map(part => part.id), preset === 'side' ? [.04, .13, 1] : [.42, .53, 1], .77);
   }
   focusPart(id) {
     if (this.inspection) this.endInspection();
@@ -458,6 +588,6 @@ export class SoundScene {
   dispose() {
     if (this.disposed) return; this.disposed = true; this.resizeObserver.disconnect(); this.controls.removeEventListener('change', this.controlsChanged); this.controls.dispose();
     for (const [type, listener] of [['pointerdown', this.pointerDown], ['pointerup', this.pointerUp], ['pointercancel', this.pointerCancel]]) this.renderer.domElement.removeEventListener(type, listener);
-    this.particleMesh.dispose(); for (const geometry of this.geometries) geometry.dispose(); for (const material of this.materials) material.dispose(); for (const texture of this.textures) texture.dispose(); this.environment.dispose(); this.renderer.dispose(); this.overlay.remove(); this.renderer.domElement.remove(); this.container.classList.remove('sound-scene');
+    this.particleMesh.dispose(); this.displacementMesh.dispose(); for (const geometry of this.geometries) geometry.dispose(); for (const material of this.materials) material.dispose(); for (const texture of this.textures) texture.dispose(); this.environment.dispose(); this.renderer.dispose(); this.overlay.remove(); this.renderer.domElement.remove(); this.container.classList.remove('sound-scene');
   }
 }
