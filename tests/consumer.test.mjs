@@ -175,6 +175,7 @@ try {
 
   await check('explicit selected-part focus returns from the narrow inspector to the actual scene and closes a prior notification', async () => {
     await page.setViewportSize({ width: 390, height: 844 }); await paint();
+    await page.locator('#parts-disclosure > summary').click();
     const beforeSelect = await project(); await select('part-select', 'probe-tip');
     assert.deepEqual((await project()).observation.camera, beforeSelect.observation.camera);
     const pending = page.waitForEvent('download'); await page.locator('#save-project').click(); await pending;

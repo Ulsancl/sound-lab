@@ -25,6 +25,14 @@ let scene = null, initialCamera = null, guide = null, previous = null, busy = fa
 let running = false, frameId = null, lastTick = 0, lastPaint = 0, lastSave = 0;
 let saveTimer, toastTimer, recoveredRaw = null, storageBlocked = false;
 const chart = new WaveChart($('#wave-chart'), $('#frequency-chart'));
+const narrowLayout = window.matchMedia('(max-width: 760px)');
+const partsDisclosure = $('#parts-disclosure'), lessonsDisclosure = $('#lessons-disclosure');
+function syncDisclosures() {
+  partsDisclosure.open = !narrowLayout.matches;
+  lessonsDisclosure.open = !narrowLayout.matches || Boolean(guide);
+}
+syncDisclosures();
+narrowLayout.addEventListener('change', syncDisclosures);
 const inspectionParts = new Set(['rail','tube-wall','tube-collars','left-support','right-support','end-cap','probe-carriage']);
 const detailPanel = new SoundDetailPanel($('#sound-details'), $('#part-facts'), $('#part-detail-note'), { onPhase: setPhase, onProbe: setProbe });
 const tone = new TonePlayer({ onChange: state => {
@@ -163,6 +171,7 @@ function renderGuide() {
   const observing = guide?.status === 'active';
   $('#air-temperature').disabled = observing; $('#display-period').disabled = observing;
   $('#lesson-temperature-hint').hidden = !observing; $('#lesson-clock-hint').hidden = !observing;
+  text('#selected-lesson-name', guide ? LESSONS[guide.id].title : '');
   $('#lesson-guide').hidden = !guide; if (!guide) return;
   const info = guideText(guide); text('#guide-title', LESSONS[guide.id].title);
   text('#guide-progress', guide.status === 'completed' ? '관찰 완료' : `관찰 ${guide.stage + 1} / ${info.total}`);
@@ -195,6 +204,7 @@ function refresh(paint = true) {
   $('#inspect-part').setAttribute('aria-pressed', String(Boolean(inspection)));
   text('#inspect-part', inspection ? '내부 관찰 마치기' : '내부 구조 자세히');
   const part = COMPONENTS.find(item => item.id === view.selectedPart);
+  text('#selected-part-name', part.name);
   text('#part-description', part.description); text('#part-material', part.material); $('#part-action').hidden = part.id !== 'end-cap'; text('#part-action', experiment.config.boundary === 'open-open' ? '왼쪽 끝마개 닫기' : '왼쪽 끝마개 열기');
   $('#comparison-panel').hidden = !comparison;
   if (comparison) text('#comparison-summary', `현재 ${conditionName(experiment)} / 보관 ${conditionName(comparison.experiment)}`);
@@ -205,6 +215,7 @@ function startLesson(id) {
   if (busy || !LESSONS[id]) return; pause(); tone.stop(); remember(); scene?.endInspection?.();
   initialCamera = null; experiment = initialExperiment(LESSONS[id].config); if (id === 'nodes') experiment.probeRatio = 0;
   guide = createGuide(id); comparison = null; chartDisplay = 'both'; view = normalizeView(DEFAULT_VIEW); displayPeriodS = DISPLAY_PERIOD_S.default;
+  lessonsDisclosure.open = true;
   updateSnapshot(); syncControls(); refresh(); scene?.resetCamera(); saveLocal();
   $('#lesson-guide').scrollIntoView({ block: 'nearest' });
 }
@@ -266,7 +277,7 @@ $('#guide-restart').addEventListener('click', () => { if (guide) startLesson(gui
 $('#pin-comparison').addEventListener('click', pinComparison); $('#clear-comparison').addEventListener('click', () => { comparison = null; chartDisplay = 'both'; refresh(false); scheduleSave(); });
 for (const button of $$('[data-chart-mode]')) button.addEventListener('click', () => { chartDisplay = button.dataset.chartMode; refresh(false); });
 $('#new-project').addEventListener('click', newExperiment);
-$('#undo-new').addEventListener('click', () => { if (!previous || busy) return; const saved = previous; previous = null; readProject(saved.project, saved.guide); $('#undo-new').hidden = true; toast('직전 실험을 복원했습니다.'); });
+$('#undo-new').addEventListener('click', () => { if (!previous || busy) return; const saved = previous; previous = null; readProject(saved.project, saved.guide); if (guide) lessonsDisclosure.open = true; $('#undo-new').hidden = true; toast('직전 실험을 복원했습니다.'); });
 $('#save-project').addEventListener('click', saveFile); $('#open-project').addEventListener('click', openFile);
 $('#project-file').addEventListener('change', async event => { const file = event.target.files?.[0]; if (!file || busy) return; setBusy(true);
   try { if (file.size > 10 * 1024 * 1024) throw new Error('실험 파일은 10 MiB 이하여야 합니다.'); const saved = parseProject(await file.text()); remember(); readProject(saved); toast('저장한 소리 실험을 복원했습니다.'); }
